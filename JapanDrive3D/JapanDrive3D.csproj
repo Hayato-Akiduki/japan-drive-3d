@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>JapanDrive</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Raylib-cs" Version="7.0.2" />
+  </ItemGroup>
+
+  <!-- 遊び方メモを配布フォルダにも入れる -->
+  <ItemGroup>
+    <None Include="遊び方.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- 2D版と同じ地図データ・ゲームルールを共有する -->
+  <ItemGroup>
+    <Compile Include="..\JapanDrive\MapData.cs" Link="Shared\MapData.cs" />
+    <Compile Include="..\JapanDrive\JapanOutline.cs" Link="Shared\JapanOutline.cs" />
+    <Compile Include="..\JapanDrive\Game.cs" Link="Shared\Game.cs" />
+  </ItemGroup>
+
+</Project>

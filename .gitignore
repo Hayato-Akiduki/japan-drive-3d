@@ -1,0 +1,11 @@
+# ビルド結果（GitHub のリリースに置くので git には入れない）
+bin/
+obj/
+配布/
+*.zip
+
+# エディタ・ローカル設定
+.vs/
+.vscode/
+*.user
+.claude/
