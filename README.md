@@ -21,7 +21,9 @@
 
 ## ダウンロード
 
-[Releases](../../releases) から `日本一周ドライブ3D.zip` をダウンロードし、展開して `JapanDrive3D.exe` を実行します（.NET のインストールは不要です）。
+**[最新版をダウンロード（JapanDrive3D-win-x64.zip）](https://github.com/Hayato-Akiduki/japan-drive-3d/releases/latest/download/JapanDrive3D-win-x64.zip)**
+
+zip を右クリック →「すべて展開」し、中の `JapanDrive3D.exe` をダブルクリックで起動します（Windows 10/11 の 64bit 用、.NET のインストールは不要です）。過去のバージョンは [Releases](https://github.com/Hayato-Akiduki/japan-drive-3d/releases) にあります。
 
 初回に「Windows によって PC が保護されました」と出たら、「詳細情報」→「実行」を押してください（署名のない自作アプリのため表示されます）。
 
@@ -45,4 +47,4 @@ dotnet run --project JapanDrive3D
 dotnet publish JapanDrive3D -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o 配布/日本一周ドライブ3D
 ```
 
-ゲーム詰め合わせアプリ ALLGAME にも組み込まれています（ALLGAME の `npm run dist` が `配布/日本一周ドライブ3D` の exe を取り込みます）。
+リリース用の zip は `配布/日本一周ドライブ3D` フォルダを圧縮して作ります。
