@@ -121,6 +121,7 @@ public sealed partial class App
             Raylib.SetWindowPosition((mw - w) / 2, (mh - h) / 2);
         }
         Raylib.SetExitKey(KeyboardKey.Null);
+        SetWindowIcon();
         Raylib.SetTargetFPS(60);
 
         // 両面描画にする（rlglは描画をまとめて後で実行するので、途中で切り替えると反映がずれるため）
@@ -163,6 +164,18 @@ public sealed partial class App
         Audio.Shutdown();
         Raylib.UnloadFont(Draw.Font);
         Raylib.CloseWindow();
+    }
+
+    /// <summary>ウィンドウ（タイトルバー・タスクバー）のアイコン。</summary>
+    private static void SetWindowIcon()
+    {
+        using var stream = typeof(App).Assembly.GetManifestResourceStream("icon.png");
+        if (stream == null) return;
+        using var ms = new MemoryStream();
+        stream.CopyTo(ms);
+        var image = Raylib.LoadImageFromMemory(".png", ms.ToArray());
+        Raylib.SetWindowIcon(image);
+        Raylib.UnloadImage(image);
     }
 
     private void StartGame(GameMode mode)

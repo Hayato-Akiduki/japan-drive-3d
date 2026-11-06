@@ -8,7 +8,10 @@
     <RootNamespace>JapanDrive</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- ゲームのバージョン。自動更新は GitHub のリリース（v1.1.0 など）と比べる -->
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
+    <ApplicationIcon>icon.ico</ApplicationIcon>
+    <Product>日本一周ドライブ3D</Product>
+    <Company>Hayato-Akiduki</Company>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,6 +21,8 @@
   <!-- 遊び方メモを配布フォルダにも入れる -->
   <ItemGroup>
     <None Include="遊び方.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <!-- ゲームのウィンドウのアイコン -->
+    <EmbeddedResource Include="icon.png" LogicalName="icon.png" />
   </ItemGroup>
 
   <!-- 2D版と同じ地図データ・ゲームルールを共有する -->

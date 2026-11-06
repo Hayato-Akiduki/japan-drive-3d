@@ -146,6 +146,7 @@ public static class Updater
                     ?? throw new FileNotFoundException("更新ファイルの中に JapanDrive3D.exe がありません");
 
                 Install(newExe);
+                UpdateInstalledVersion();
                 Directory.Delete(work, true);
                 status = State.Installed;
                 Message = "";
@@ -203,6 +204,22 @@ public static class Updater
             if (File.Exists(exe)) File.Delete(exe);
             File.Move(OldExe, exe);
             throw;
+        }
+    }
+
+    /// <summary>インストーラーで入れていたら、Windows の「アプリ」一覧に出るバージョンを書き換える。</summary>
+    private static void UpdateInstalledVersion()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            using var key = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+                @"Software\Microsoft\Windows\CurrentVersion\Uninstall\JapanDrive3D", writable: true);
+            key?.SetValue("DisplayVersion", LatestTag.TrimStart('v', 'V'));
+        }
+        catch
+        {
+            // 書き換えられなくても更新自体は終わっている
         }
     }
 

@@ -21,9 +21,10 @@
 
 ## ダウンロード
 
-**[最新版をダウンロード（JapanDrive3D-win-x64.zip）](https://github.com/Hayato-Akiduki/japan-drive-3d/releases/latest/download/JapanDrive3D-win-x64.zip)**
+[Releases](https://github.com/Hayato-Akiduki/japan-drive-3d/releases/latest) から、どちらかをダウンロードしてください（Windows 10/11 の 64bit 用、.NET のインストールは不要です）。
 
-zip を右クリック →「すべて展開」し、中の `JapanDrive3D.exe` をダブルクリックで起動します（Windows 10/11 の 64bit 用、.NET のインストールは不要です）。過去のバージョンは [Releases](https://github.com/Hayato-Akiduki/japan-drive-3d/releases) にあります。
+- **インストーラー（おすすめ）**：`JapanDrive3D-Setup-<バージョン>.exe` を実行。スタートメニューとデスクトップにショートカットができ、Windows の「アプリ」からアンインストールできます。管理者権限はいりません。
+- **zip 版**：[JapanDrive3D-win-x64.zip](https://github.com/Hayato-Akiduki/japan-drive-3d/releases/latest/download/JapanDrive3D-win-x64.zip) を右クリック →「すべて展開」し、中の `JapanDrive3D.exe` をダブルクリック。過去のバージョンは [Releases](https://github.com/Hayato-Akiduki/japan-drive-3d/releases) にあります。
 
 初回に「Windows によって PC が保護されました」と出たら、「詳細情報」→「実行」を押してください（署名のない自作アプリのため表示されます）。
 
@@ -35,6 +36,8 @@ v1.1.0 からは**自動更新**に対応しています。起動時に新しい
 |---|---|
 | `JapanDrive3D/` | 3D 版（本体）。[Raylib-cs](https://github.com/ChrisDill/Raylib-cs) を使用 |
 | `JapanDrive/` | 最初に作った 2D 版（WinForms）。地図データとゲームのルールは 3D 版と共通 |
+| `installer/` | インストーラーの設定（NSIS） |
+| `tools/` | アイコン作成（`make-icon.ps1`）と配布物の一括作成（`build-release.ps1`） |
 | `docs/` | README 用の画像 |
 
 ## ビルド
@@ -45,16 +48,16 @@ v1.1.0 からは**自動更新**に対応しています。起動時に新しい
 # 遊ぶ（開発中）
 dotnet run --project JapanDrive3D
 
-# 配布用の exe を作る（.NET 不要の単体 exe）
-dotnet publish JapanDrive3D -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o 配布/日本一周ドライブ3D
+# 配布物をまとめて作る：単体 exe・zip・インストーラー（配布/ フォルダにできる）
+powershell -ExecutionPolicy Bypass -File tools/build-release.ps1
 ```
 
-リリース用の zip は `配布/日本一周ドライブ3D` フォルダを `JapanDrive3D-win-x64.zip` という名前で圧縮して作ります。
+インストーラーには [NSIS](https://nsis.sourceforge.io/) が必要です（`build-release.ps1` が自動で探します。見つからないときは NSIS をインストールするか、環境変数 `MAKENSIS` に `makensis.exe` の場所を設定してください）。アイコンを描き直すときは `tools/make-icon.ps1` を実行します。
 
 ### 新しいバージョンを出すとき（自動更新に届けるには）
 
 1. `JapanDrive3D/JapanDrive3D.csproj` の `<Version>` を上げる（例：1.1.0 → 1.2.0）
-2. 上の `dotnet publish` で exe を作り、`JapanDrive3D-win-x64.zip` に圧縮する
-3. GitHub に同じ番号のリリース（タグ `v1.2.0`）を作り、zip を添付する
+2. `tools/build-release.ps1` で zip とインストーラーを作る
+3. GitHub に同じ番号のリリース（タグ `v1.2.0`）を作り、zip とインストーラーを添付する
 
 ゲームは起動時に `releases/latest` を見て、タグの番号が自分より新しければ更新を案内します。zip の名前を変えると自動更新が見つけられないので注意してください。
