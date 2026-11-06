@@ -218,6 +218,7 @@ public sealed partial class App
         TextCentered(RecordText(), sw / 2f, y + 2 * (h + 18 * u) + 44 * u, 16, Rgb(255, 220, 150));
         TextCentered($"F2 BGM {(Audio.BgmOn ? "ON" : "OFF")}　F3 効果音 {(Audio.SfxOn ? "ON" : "OFF")}　（記録は自動でセーブされます）",
             sw / 2f, y + 2 * (h + 18 * u) + 72 * u, 13, new Color(255, 255, 255, 170));
+        DrawUpdateBanner(sw, sh, u);
     }
 
     /// <summary>3Dの案内標識に文字を重ねる。</summary>

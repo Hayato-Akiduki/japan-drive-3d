@@ -7,6 +7,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>JapanDrive</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- ゲームのバージョン。自動更新は GitHub のリリース（v1.1.0 など）と比べる -->
+    <Version>1.1.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

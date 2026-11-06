@@ -80,6 +80,8 @@ public sealed partial class App
                 case "--tour": app.demoTour = true; break;
                 case "--book": app.demoBook = true; break;
                 case "--persist": app.demoPersist = true; break;
+                case "--update-test": app.demoUpdate = true; break;
+                case "--update-restart": app.demoUpdate = app.demoRestart = true; break;
                 case "--vehicle" when i + 1 < args.Length:
                     app.demoVehicle = args[++i] switch
                     {
@@ -126,6 +128,8 @@ public sealed partial class App
         Draw.LoadFont();
         Audio.Init();
         LoadSave();
+        Updater.CleanupOld();
+        if (shotFile == null || demoUpdate) Updater.StartCheck();
         traffic.Reset(playerS);
         camera = new Camera3D
         {
@@ -145,6 +149,12 @@ public sealed partial class App
             if (shotFile != null && (demoTime += dt) > shotSeconds)
             {
                 Raylib.TakeScreenshot(shotFile);
+                break;
+            }
+            if (restartRequested)
+            {
+                // 新しい版で起動し直す
+                Updater.Restart();
                 break;
             }
         }
@@ -210,6 +220,7 @@ public sealed partial class App
         }
 
         HandleKeys();
+        NotifyUpdateInGame();
         UpdateFade(dt);
         popupTime += dt;
         if (bigMap || stampBook)
@@ -334,6 +345,7 @@ public sealed partial class App
 
     private void UpdateTitle(float dt)
     {
+        HandleUpdateKeys();
         titleTime += dt;
         playerS += 22 * dt;
         scene.PlayerS = playerS;

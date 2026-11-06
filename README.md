@@ -27,6 +27,8 @@ zip を右クリック →「すべて展開」し、中の `JapanDrive3D.exe` �
 
 初回に「Windows によって PC が保護されました」と出たら、「詳細情報」→「実行」を押してください（署名のない自作アプリのため表示されます）。
 
+v1.1.0 からは**自動更新**に対応しています。起動時に新しいバージョンを確認し、見つかったらタイトル画面で U キーを押すだけで更新できます（セーブデータはそのまま）。v1.0.0 を使っている人は、一度だけ手動で v1.1.0 以降をダウンロードしてください。
+
 ## フォルダ構成
 
 | フォルダ | 中身 |
@@ -47,4 +49,12 @@ dotnet run --project JapanDrive3D
 dotnet publish JapanDrive3D -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o 配布/日本一周ドライブ3D
 ```
 
-リリース用の zip は `配布/日本一周ドライブ3D` フォルダを圧縮して作ります。
+リリース用の zip は `配布/日本一周ドライブ3D` フォルダを `JapanDrive3D-win-x64.zip` という名前で圧縮して作ります。
+
+### 新しいバージョンを出すとき（自動更新に届けるには）
+
+1. `JapanDrive3D/JapanDrive3D.csproj` の `<Version>` を上げる（例：1.1.0 → 1.2.0）
+2. 上の `dotnet publish` で exe を作り、`JapanDrive3D-win-x64.zip` に圧縮する
+3. GitHub に同じ番号のリリース（タグ `v1.2.0`）を作り、zip を添付する
+
+ゲームは起動時に `releases/latest` を見て、タグの番号が自分より新しければ更新を案内します。zip の名前を変えると自動更新が見つけられないので注意してください。
