@@ -2,20 +2,27 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Reflection;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace JapanDrive;
 
 /// <summary>
 /// 自動更新：GitHub の最新リリースを確認し、新しい版があればダウンロードして入れ替える。
-/// 動いている exe は上書きできないが名前は変えられるので、
-/// 「今の exe を .old にリネーム → 新しい exe を置く → 再起動」で更新する（別の更新用プログラムはいらない）。
+///
+/// リリースにはインストーラー（JapanDrive3D-Setup-x.y.z.exe）を置く。
+/// 更新するときは、インストーラーを「画面なし・更新モード」で今のフォルダに向けて実行し、ゲームは閉じる。
+/// インストーラーが exe を入れ替えて、新しいゲームを起動する（zip 版で遊んでいた人も今のフォルダのまま更新される）。
+///
+/// 古いリリース（v1.2.0 まで）には zip しかないので、そのときは zip から exe を入れ替える。
+/// 動いている exe は上書きできないが名前は変えられるので「今の exe を .old にリネーム → 新しい exe を置く」で入れ替える。
 /// </summary>
 public static class Updater
 {
-    public enum State { Idle, Checking, UpToDate, Available, Downloading, Installed, Failed }
+    public enum State { Idle, Checking, UpToDate, Available, Downloading, ReadyToInstall, Installed, Failed }
 
     private const string Repo = "Hayato-Akiduki/japan-drive-3d";
-    private const string AssetName = "JapanDrive3D-win-x64.zip";
+    private const string ZipName = "JapanDrive3D-win-x64.zip";
+    private static readonly Regex SetupName = new(@"^JapanDrive3D-Setup-[\d.]+\.exe$", RegexOptions.IgnoreCase);
     public const string ReleasePage = "https://github.com/" + Repo + "/releases/latest";
 
     // テスト用：環境変数で確認先を差し替えられる
@@ -30,8 +37,10 @@ public static class Updater
     public static float Progress { get; private set; }
     public static string Message { get; private set; } = "";
 
-    private static string? assetUrl;
+    private static string? assetUrl, assetName;
     private static long assetSize;
+    private static string? installerPath;
+    private static bool UseInstaller => assetName != null && SetupName.IsMatch(assetName);
 
     public static Version Current { get; } = Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 0, 0);
     public static string CurrentText => $"v{Current.Major}.{Current.Minor}.{Current.Build}";
@@ -39,6 +48,7 @@ public static class Updater
     private static string? ExePath => Environment.ProcessPath;
     private static string ExeDir => Path.GetDirectoryName(ExePath) ?? AppContext.BaseDirectory;
     private static string OldExe => Path.Combine(ExeDir, "JapanDrive3D.old.exe");
+    private static string WorkDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JapanDrive3D", "update");
 
     /// <summary>配布用の単体 exe のときだけ入れ替えできる（開発中の dotnet run では入れ替えない）。</summary>
     public static bool CanSelfUpdate =>
@@ -53,14 +63,20 @@ public static class Updater
         return c;
     }
 
-    /// <summary>前回の更新で残った古い exe を消す（終了直後はまだ使用中のことがあるので何回か試す）。</summary>
+    /// <summary>前回の更新で残った古い exe とダウンロードしたファイルを片付ける（使用中のことがあるので何回か試す）。</summary>
     public static void CleanupOld()
     {
         Task.Run(async () =>
         {
-            for (int i = 0; i < 10 && File.Exists(OldExe); i++)
+            for (int i = 0; i < 10 && (File.Exists(OldExe) || Directory.Exists(WorkDir)); i++)
             {
-                try { File.Delete(OldExe); }
+                try
+                {
+                    if (File.Exists(OldExe)) File.Delete(OldExe);
+                    if (Directory.Exists(WorkDir) && status is State.Idle or State.Checking or State.UpToDate)
+                        Directory.Delete(WorkDir, true);
+                    break;
+                }
                 catch { await Task.Delay(1500); }
             }
         });
@@ -85,9 +101,13 @@ public static class Updater
                     status = State.UpToDate;
                     return;
                 }
+                // インストーラーがあればそれを、なければ（古いリリース）zip を使う
                 foreach (var asset in root.GetProperty("assets").EnumerateArray())
                 {
-                    if (asset.GetProperty("name").GetString() != AssetName) continue;
+                    string name = asset.GetProperty("name").GetString() ?? "";
+                    bool setup = SetupName.IsMatch(name);
+                    if (!setup && (name != ZipName || UseInstaller)) continue;
+                    assetName = name;
                     assetUrl = asset.GetProperty("browser_download_url").GetString();
                     assetSize = asset.GetProperty("size").GetInt64();
                 }
@@ -104,10 +124,10 @@ public static class Updater
         });
     }
 
-    /// <summary>ダウンロードして exe を入れ替える。</summary>
+    /// <summary>新しい版をダウンロードする（インストーラーなら準備まで、zip なら入れ替えまで）。</summary>
     public static void StartUpdate()
     {
-        if (status != State.Available || assetUrl == null) return;
+        if (status != State.Available || assetUrl == null || assetName == null) return;
         if (!CanSelfUpdate)
         {
             status = State.Failed;
@@ -118,36 +138,47 @@ public static class Updater
         Progress = 0;
         Task.Run(async () =>
         {
-            string work = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JapanDrive3D", "update");
             try
             {
-                if (Directory.Exists(work)) Directory.Delete(work, true);
-                Directory.CreateDirectory(work);
-                string zip = Path.Combine(work, AssetName);
-
-                // ダウンロード（進み具合を表示）。通信が一瞬切れることもあるので3回まで試す
-                for (int attempt = 1; ; attempt++)
+                Directory.CreateDirectory(WorkDir);
+                string file = Path.Combine(WorkDir, assetName);
+                // 前にダウンロードし終わっていたら、それを使う
+                if (!(File.Exists(file) && new FileInfo(file).Length == assetSize))
                 {
-                    try
+                    // 通信が一瞬切れることもあるので3回まで試す
+                    for (int attempt = 1; ; attempt++)
                     {
-                        await DownloadTo(zip);
-                        break;
-                    }
-                    catch (Exception) when (attempt < 3)
-                    {
-                        Progress = 0;
-                        await Task.Delay(2000);
+                        try
+                        {
+                            await DownloadTo(file);
+                            break;
+                        }
+                        catch (Exception) when (attempt < 3)
+                        {
+                            Progress = 0;
+                            await Task.Delay(2000);
+                        }
                     }
                 }
+                Progress = 1;
 
-                string extract = Path.Combine(work, "new");
-                ZipFile.ExtractToDirectory(zip, extract);
+                if (UseInstaller)
+                {
+                    installerPath = file;
+                    status = State.ReadyToInstall;
+                    Message = "";
+                    return;
+                }
+
+                // 古いリリース：zip を展開して exe を入れ替える
+                string extract = Path.Combine(WorkDir, "new");
+                if (Directory.Exists(extract)) Directory.Delete(extract, true);
+                ZipFile.ExtractToDirectory(file, extract);
                 string newExe = Directory.GetFiles(extract, "JapanDrive3D.exe", SearchOption.AllDirectories).FirstOrDefault()
                     ?? throw new FileNotFoundException("更新ファイルの中に JapanDrive3D.exe がありません");
-
                 Install(newExe);
                 UpdateInstalledVersion();
-                Directory.Delete(work, true);
+                Directory.Delete(WorkDir, true);
                 status = State.Installed;
                 Message = "";
             }
@@ -164,13 +195,13 @@ public static class Updater
         });
     }
 
-    private static async Task DownloadTo(string zip)
+    private static async Task DownloadTo(string path)
     {
         using var res = await Http.GetAsync(assetUrl, HttpCompletionOption.ResponseHeadersRead);
         res.EnsureSuccessStatusCode();
         long total = res.Content.Headers.ContentLength ?? assetSize;
         await using var src = await res.Content.ReadAsStreamAsync();
-        await using var dst = File.Create(zip);
+        await using var dst = File.Create(path);
         var buf = new byte[81920];
         long done = 0;
         int n;
@@ -207,7 +238,7 @@ public static class Updater
         }
     }
 
-    /// <summary>インストーラーで入れていたら、Windows の「アプリ」一覧に出るバージョンを書き換える。</summary>
+    /// <summary>インストーラーで入れていたら、Windows の「アプリ」一覧に出るバージョンを書き換える（zip で更新したとき用）。</summary>
     private static void UpdateInstalledVersion()
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -223,10 +254,20 @@ public static class Updater
         }
     }
 
-    /// <summary>新しい exe で起動し直す（呼んだ側はそのあとウィンドウを閉じる）。</summary>
+    /// <summary>
+    /// 新しい版で起動し直す（呼んだ側はそのあとウィンドウを閉じる）。
+    /// インストーラーのときは「画面なし（/S）・更新モード（/UPDATE）・今のフォルダ（/D）」で実行し、
+    /// インストールが終わるとインストーラーが新しいゲームを起動する。
+    /// </summary>
     public static void Restart()
     {
         if (ExePath == null) return;
+        if (status == State.ReadyToInstall && installerPath != null)
+        {
+            // /D は最後に、引用符なしで書く決まり（フォルダ名に空白があってもよい）
+            Process.Start(new ProcessStartInfo(installerPath, $"/S /UPDATE /D={ExeDir}") { UseShellExecute = false });
+            return;
+        }
         Process.Start(new ProcessStartInfo(ExePath) { UseShellExecute = false, WorkingDirectory = ExeDir });
     }
 

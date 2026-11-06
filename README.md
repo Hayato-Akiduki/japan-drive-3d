@@ -21,14 +21,13 @@
 
 ## ダウンロード
 
-[Releases](https://github.com/Hayato-Akiduki/japan-drive-3d/releases/latest) から、どちらかをダウンロードしてください（Windows 10/11 の 64bit 用、.NET のインストールは不要です）。
+[Releases](https://github.com/Hayato-Akiduki/japan-drive-3d/releases/latest) から **`JapanDrive3D-Setup-<バージョン>.exe`（インストーラー）** をダウンロードして実行してください。スタートメニューとデスクトップにショートカットができ、Windows の「設定 → アプリ」からアンインストールできます。管理者権限はいりません（Windows 10/11 の 64bit 用、.NET のインストールも不要です）。
 
-- **インストーラー（おすすめ）**：`JapanDrive3D-Setup-<バージョン>.exe` を実行。スタートメニューとデスクトップにショートカットができ、Windows の「アプリ」からアンインストールできます。管理者権限はいりません。
-- **zip 版**：[JapanDrive3D-win-x64.zip](https://github.com/Hayato-Akiduki/japan-drive-3d/releases/latest/download/JapanDrive3D-win-x64.zip) を右クリック →「すべて展開」し、中の `JapanDrive3D.exe` をダブルクリック。過去のバージョンは [Releases](https://github.com/Hayato-Akiduki/japan-drive-3d/releases) にあります。
+v1.2.0 までは zip 版も置いていましたが、これからはインストーラーだけになります。過去のバージョンは [Releases](https://github.com/Hayato-Akiduki/japan-drive-3d/releases) にあります。
 
 初回に「Windows によって PC が保護されました」と出たら、「詳細情報」→「実行」を押してください（署名のない自作アプリのため表示されます）。
 
-v1.1.0 からは**自動更新**に対応しています。起動時に新しいバージョンを確認し、見つかったらタイトル画面で U キーを押すだけで更新できます（セーブデータはそのまま）。v1.0.0 を使っている人は、一度だけ手動で v1.1.0 以降をダウンロードしてください。
+**自動更新**に対応しています。起動時に新しいバージョンを確認し、見つかったらタイトル画面で U キーを押すだけで更新できます（セーブデータはそのまま）。新しいインストーラーを裏でダウンロードして画面なしで上書きインストールし、ゲームを起動し直します。zip 版で遊んでいた人も、そのフォルダのまま更新されます。v1.0.0 を使っている人は、一度だけ手動でインストーラーを入れてください。
 
 ## フォルダ構成
 
@@ -48,7 +47,7 @@ v1.1.0 からは**自動更新**に対応しています。起動時に新しい
 # 遊ぶ（開発中）
 dotnet run --project JapanDrive3D
 
-# 配布物をまとめて作る：単体 exe・zip・インストーラー（配布/ フォルダにできる）
+# 配布物（インストーラー）を作る：配布/JapanDrive3D-Setup-<バージョン>.exe ができる
 powershell -ExecutionPolicy Bypass -File tools/build-release.ps1
 ```
 
@@ -57,7 +56,7 @@ powershell -ExecutionPolicy Bypass -File tools/build-release.ps1
 ### 新しいバージョンを出すとき（自動更新に届けるには）
 
 1. `JapanDrive3D/JapanDrive3D.csproj` の `<Version>` を上げる（例：1.1.0 → 1.2.0）
-2. `tools/build-release.ps1` で zip とインストーラーを作る
-3. GitHub に同じ番号のリリース（タグ `v1.2.0`）を作り、zip とインストーラーを添付する
+2. `tools/build-release.ps1` でインストーラーを作る
+3. GitHub に同じ番号のリリース（タグ `v1.2.0`）を作り、インストーラーだけを添付する
 
-ゲームは起動時に `releases/latest` を見て、タグの番号が自分より新しければ更新を案内します。zip の名前を変えると自動更新が見つけられないので注意してください。
+ゲームは起動時に `releases/latest` を見て、タグの番号が自分より新しければ更新を案内します。自動更新はリリースの中の `JapanDrive3D-Setup-<番号>.exe` を探して `/S /UPDATE /D=<今のフォルダ>` で実行するので、インストーラーの名前は変えないでください。

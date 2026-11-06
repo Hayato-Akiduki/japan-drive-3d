@@ -20,7 +20,7 @@ public sealed partial class App
             Audio.Play(Audio.Select);
             Updater.StartUpdate();
         }
-        if (st == Updater.State.Installed && (Raylib.IsKeyPressed(KeyboardKey.R) || demoRestart))
+        if (st is Updater.State.Installed or Updater.State.ReadyToInstall && (Raylib.IsKeyPressed(KeyboardKey.R) || demoRestart))
         {
             SaveNow();
             restartRequested = true;
@@ -56,6 +56,11 @@ public sealed partial class App
             case Updater.State.Downloading:
                 msg = $"{Updater.LatestTag} をダウンロード中… {Updater.Progress * 100:0}%";
                 progress = Updater.Progress;
+                break;
+            case Updater.State.ReadyToInstall:
+                msg = $"{Updater.LatestTag} の準備ができました！";
+                sub = "R：更新して再起動する（ゲームがいったん閉じて、新しい版が自動で起動します）";
+                col = Rgb(150, 255, 160);
                 break;
             case Updater.State.Installed:
                 msg = $"{Updater.LatestTag} に更新しました！";

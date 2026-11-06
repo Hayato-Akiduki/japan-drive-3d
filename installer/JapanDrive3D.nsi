@@ -2,12 +2,19 @@
 ; 作り方は tools/build-release.ps1 を使う（このファイルを直接 makensis に渡してもよい）
 ;   makensis /DVERSION=1.2.0 /DSRCDIR=..\配布\日本一周ドライブ3D /DOUTFILE=..\配布\JapanDrive3D-Setup-1.2.0.exe JapanDrive3D.nsi
 ;
+; ゲームの自動更新は「JapanDrive3D-Setup-x.y.z.exe /S /UPDATE /D=<今のフォルダ>」で実行する。
+;   /UPDATE のとき：デスクトップのショートカットは新しく作らず、終わったらゲームを起動する
+;
 ; ・管理者権限なしでユーザーのフォルダ（%LOCALAPPDATA%\Programs\JapanDrive3D）に入れる
 ;   → ゲームの自動更新が exe を入れ替えられるように
 ; ・スタートメニューとデスクトップにショートカット、Windows の「アプリ」からアンインストールできる
 
 Unicode true
 !include "MUI2.nsh"
+!include "FileFunc.nsh"
+!include "Sections.nsh"
+
+Var IsUpdate
 
 !ifndef VERSION
   !define VERSION "1.0.0"
@@ -70,9 +77,13 @@ VIAddVersionKey /LANG=1041 "LegalCopyright" "${PUBLISHER}"
 Section "${APPNAME}（本体）" SecMain
   SectionIn RO
   SetOutPath "$INSTDIR"
+  ; 動いているゲームの exe でも名前は変えられるので、先によけておく（ゲームが閉じるのを待たなくてよい）
+  Delete "$INSTDIR\JapanDrive3D.old.exe"
+  IfFileExists "$INSTDIR\${EXENAME}" 0 +2
+    Rename "$INSTDIR\${EXENAME}" "$INSTDIR\JapanDrive3D.old.exe"
   File "${SRCDIR}\${EXENAME}"
   File "${SRCDIR}\遊び方.txt"
-  Delete "$INSTDIR\JapanDrive3D.old.exe"   ; 自動更新で残った古い exe
+  Delete "$INSTDIR\JapanDrive3D.old.exe"   ; ゲームがもう閉じていれば消える（使用中ならゲームが次の起動で消す）
   WriteUninstaller "$INSTDIR\uninstall.exe"
 
   CreateShortcut "$SMPROGRAMS\${APPNAME}.lnk" "$INSTDIR\${EXENAME}" "" "$INSTDIR\${EXENAME}" 0
@@ -96,6 +107,24 @@ Section "デスクトップにショートカットを作る" SecDesktop
   SetOutPath "$INSTDIR"
   CreateShortcut "$DESKTOP\${APPNAME}.lnk" "$INSTDIR\${EXENAME}" "" "$INSTDIR\${EXENAME}" 0
 SectionEnd
+
+; ---- 自動更新（/UPDATE）のとき ----
+Function .onInit
+  StrCpy $IsUpdate 0
+  ${GetParameters} $0
+  ClearErrors
+  ${GetOptions} $0 "/UPDATE" $1
+  IfErrors notUpdate
+    StrCpy $IsUpdate 1
+    !insertmacro UnselectSection ${SecDesktop}
+  notUpdate:
+FunctionEnd
+
+Function .onInstSuccess
+  StrCmp $IsUpdate 1 0 done
+    Exec '"$INSTDIR\${EXENAME}"'
+  done:
+FunctionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
   !insertmacro MUI_DESCRIPTION_TEXT ${SecMain} "ゲーム本体と遊び方メモ（約72MB）。スタートメニューにも登録します。"
