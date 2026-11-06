@@ -615,13 +615,16 @@ public sealed class Scene
 
     /// <summary>ワールド座標と向き（度）を直接指定して車を描く。</summary>
     public void DrawVehicleAt(Vector3 pos, float yaw, Color body, VehicleKind kind, float spin,
-        bool braking = false, float wheelSteer = 0, float roll = 0, float turretYaw = 0, float recoil = 0, bool shadow = true)
+        bool braking = false, float wheelSteer = 0, float roll = 0, float turretYaw = 0, float recoil = 0, bool shadow = true,
+        float pitch = 0, float bank = 0)
     {
         float d = Vector3.Distance(pos, cam);
         if (d > ViewAhead * FogScale) return;
         Rlgl.PushMatrix();
         Rlgl.Translatef(pos.X, pos.Y, pos.Z);
         Rlgl.Rotatef(yaw, 0, 1, 0);
+        if (pitch != 0) Rlgl.Rotatef(-pitch, 1, 0, 0);
+        if (bank != 0) Rlgl.Rotatef(bank, 0, 0, 1);
         if (roll != 0) Rlgl.Rotatef(roll, 1, 0, 0.4f);
         CarModels.Draw(this, kind, body, d, braking, wheelSteer, spin, turretYaw, recoil, shadow: shadow && roll == 0);
         Rlgl.PopMatrix();

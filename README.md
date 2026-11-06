@@ -30,6 +30,8 @@
 
 **自動更新**に対応しています。起動時に新しいバージョンを確認し、見つかったらタイトル画面で U キーを押すだけで更新できます（セーブデータはそのまま）。新しいインストーラーを裏でダウンロードして画面なしで上書きインストールし、ゲームを起動し直します。zip 版で遊んでいた人も、そのフォルダのまま更新されます。v1.0.0 を使っている人は、一度だけ手動でインストーラーを入れてください。
 
+フリーモードの地図は、海岸線・湖・川が [Natural Earth](https://www.naturalearthdata.com/)（パブリックドメイン）の 1:10m データ、山は実際の位置と標高（高さは実際の 0.12 倍）で作っています。富士山の山頂まで車で登ったり、ビルにぶつかったり（戦車なら壊したり）できます。
+
 ## フォルダ構成
 
 | フォルダ | 中身 |
@@ -37,7 +39,7 @@
 | `JapanDrive3D/` | 3D 版（本体）。[Raylib-cs](https://github.com/ChrisDill/Raylib-cs) を使用 |
 | `JapanDrive/` | 最初に作った 2D 版（WinForms）。地図データとゲームのルールは 3D 版と共通 |
 | `installer/` | インストーラーの設定（NSIS） |
-| `tools/` | アイコン作成（`make-icon.ps1`）と配布物の一括作成（`build-release.ps1`） |
+| `tools/` | アイコン作成（`make-icon.ps1`）、配布物の一括作成（`build-release.ps1`）、地図データの作成（`make-geo.py`：Natural Earth から `JapanDrive/JapanGeo.cs` を作る） |
 | `docs/` | README 用の画像 |
 
 ## ビルド

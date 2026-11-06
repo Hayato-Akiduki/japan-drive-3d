@@ -29,6 +29,7 @@
   <ItemGroup>
     <Compile Include="..\JapanDrive\MapData.cs" Link="Shared\MapData.cs" />
     <Compile Include="..\JapanDrive\JapanOutline.cs" Link="Shared\JapanOutline.cs" />
+    <Compile Include="..\JapanDrive\JapanGeo.cs" Link="Shared\JapanGeo.cs" />
     <Compile Include="..\JapanDrive\Game.cs" Link="Shared\Game.cs" />
   </ItemGroup>
 

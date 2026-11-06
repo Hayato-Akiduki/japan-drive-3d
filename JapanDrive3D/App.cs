@@ -98,6 +98,11 @@ public sealed partial class App
                 case "--aim" when i + 1 < args.Length: app.turretTarget = float.Parse(args[++i]); break;
                 case "--accel" when i + 1 < args.Length: app.demoAccel = float.Parse(args[++i]); break;
                 case "--climb" when i + 1 < args.Length: app.demoClimb = float.Parse(args[++i]); break;
+                case "--latlon" when i + 1 < args.Length:
+                    var ll = args[++i].Split(',');
+                    app.demoLatLon = (double.Parse(ll[0]), double.Parse(ll[1]));
+                    break;
+                case "--bigmap": app.demoBigMap = true; break;
                 case "--steer" when i + 1 < args.Length: app.demoSteer = float.Parse(args[++i]); break;
                 case "--heading" when i + 1 < args.Length: app.heading = float.Parse(args[++i]); break;
             }

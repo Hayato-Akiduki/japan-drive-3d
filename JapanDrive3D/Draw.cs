@@ -41,6 +41,8 @@ public static class Draw
         foreach (var c in MapData.Cities) foreach (char ch in c.Name) chars.Add(ch);
         foreach (var r in MapData.Roads) foreach (char ch in r.Name) chars.Add(ch);
         foreach (var sp in Spots.All) foreach (char ch in sp.Name) chars.Add(ch);
+        foreach (var t in GeoFeatures.Towns) foreach (char ch in t.Name) chars.Add(ch);
+        foreach (var p in GeoFeatures.Peaks) foreach (char ch in p.Name) chars.Add(ch);
 
         string? path = null;
         foreach (var ttc in new[] { "YuGothB.ttc", "BIZ-UDGothicB.ttc", "meiryob.ttc", "msgothic.ttc" })

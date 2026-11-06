@@ -415,6 +415,17 @@ public sealed partial class App
             }
         }
 
+        foreach (var (_, pts) in JapanGeo.Lakes)
+        {
+            var lake = JapanOutline.Decode(pts);
+            for (int i = 0; i < lake.Length; i++)
+            {
+                var a = to(Game.ToWorld(lake[i].Lat, lake[i].Lon));
+                var b = to(Game.ToWorld(lake[(i + 1) % lake.Length].Lat, lake[(i + 1) % lake.Length].Lon));
+                Raylib.DrawLineEx(a, b, 1.5f * u, Rgb(110, 170, 230));
+            }
+        }
+
         var path = game.NavPath();
         if (path != null)
         {

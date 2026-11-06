@@ -30,6 +30,8 @@ public sealed partial class App
 
     // デモ用
     private float demoClimb;
+    private (double Lat, double Lon)? demoLatLon;
+    private bool demoBigMap;
     private float demoAccel = 3.5f;
     private float demoSteer;
 
@@ -38,7 +40,9 @@ public sealed partial class App
         free = new FreeWorld(scene);
         var city = MapData.Get(demoAt ?? "東京");
         (free.PX, free.PZ) = FreeWorld.CityPos(city);
-        bool resume = Persist && demoAt == null && save.FreeX is double && save.FreeZ is double;
+        if (demoLatLon is (double dLat, double dLon)) (free.PX, free.PZ) = FreeWorld.FromLatLon(dLat, dLon);
+        if (demoBigMap) bigMap = true;
+        bool resume = Persist && demoAt == null && demoLatLon == null && save.FreeX is double && save.FreeZ is double;
         if (resume)
         {
             free.PX = save.FreeX!.Value;
@@ -47,15 +51,17 @@ public sealed partial class App
         }
         free.UpdateNear();
         freeKmh = 0;
-        freeY = 0;
-        altitude = pitch = bank = groundLevel = 0;
+        freeY = groundLevel = free.SurfaceY(free.PX, free.PZ);
+        altitude = pitch = bank = terrainPitch = terrainBank = 0;
+        carAir = prevAirborne = false;
+        carVy = climbRate = 0;
         freeOnWater = false;
         animDist = 0;
         waypoint = null;
         game.Log.Clear();
         game.AddLog(resume
-            ? $"フリーモード：前回の続き（{free.NearestCity(free.PX, free.PZ).City.Name}付近）から再開しました。"
-            : $"フリーモード：{city.Name}から出発。道路も海も、日本中どこでも自由に走れます（速度制限なし）。");
+            ? $"フリーモード：前回の続き（{free.NearestPlace(free.PX, free.PZ).Name}付近）から再開しました。"
+            : $"フリーモード：{free.NearestPlace(free.PX, free.PZ).Name}から出発。道路も海も、日本中どこでも自由に走れます（速度制限なし）。");
         game.AddLog("各地の名所に近づくとスタンプがもらえます。M の地図でクリックした場所へワープもできます。");
     }
 
@@ -98,7 +104,10 @@ public sealed partial class App
             climb = demoClimb > 0 && demoTime > 1.5f && demoTime < 1.5f + demoClimb;
             descend = false;
         }
-        bool airborne = altitude > 0.5f;
+
+        float surface = f.SurfaceY(f.PX, f.PZ);
+        float ground = flyer ? Math.Max(surface, f.RoofY(f.PX, f.PZ)) : surface;
+        bool airborne = flyer ? freeY > ground + 0.5f : carAir;
 
         // 速度制限なし：踏み続けるほど速くなる
         if (up) freeKmh += Accel(playerKind) * (1 + Math.Max(0, freeKmh) / 500f) * dt;
@@ -111,14 +120,13 @@ public sealed partial class App
         }
 
         bool road = f.OnRoad(f.PX, f.PZ);
-        bool land = road || f.IsLandFast(f.PX, f.PZ);
-        bool water = !land;
+        bool water = !road && !f.IsLand(f.PX, f.PZ);
         if (water && !airborne && playerKind != VehicleKind.Amphibious && !flyer)
             freeKmh = Math.Clamp(freeKmh, -15, 30); // 水の中はゆっくり
 
         if (flyer && airborne)
             heading += steer * (playerKind == VehicleKind.Helicopter ? 60 : 45) * dt;
-        else
+        else if (!carAir)
         {
             float turn = 75f / (1 + Math.Abs(freeKmh) / 250f) * Math.Min(1, Math.Abs(freeKmh) / 8f);
             heading += steer * turn * dt * (freeKmh < 0 ? -1 : 1);
@@ -129,13 +137,13 @@ public sealed partial class App
         float ms = freeKmh / 3.6f;
         double hr = heading * Math.PI / 180;
 
-        // ---- 飛行 ----
+        // ---- 飛行（高さは海面からの高さ） ----
         float prevAlt = altitude, vs = 0;
         if (playerKind == VehicleKind.Helicopter)
         {
-            vs = (climb ? 14 : descend ? -14 : 0) * (1 + altitude / 500f);
-            altitude = Math.Max(0, altitude + vs * dt);
-            float target = altitude > 0.5f ? -Math.Clamp(freeKmh / 25f, -8, 14) : 0;   // 前進中は機首を下げる
+            vs = (climb ? 14 : descend ? -14 : 0) * (1 + Math.Max(0, altitude) / 500f);
+            freeY += vs * dt;
+            float target = airborne ? -Math.Clamp(freeKmh / 25f, -8, 14) : 0;   // 前進中は機首を下げる
             pitch += Math.Clamp(target - pitch, -30 * dt, 30 * dt);
         }
         else if (playerKind == VehicleKind.Airplane)
@@ -152,51 +160,163 @@ public sealed partial class App
                 stallWarned = true;
             }
             else if (freeKmh > stallKmh + 20) stallWarned = false;
-            altitude = Math.Max(0, altitude + vs * dt);
-            if (altitude <= 0 && pitch < 0) pitch = 0;
+            freeY += vs * dt;
             ms *= MathF.Cos(pitch * MathF.PI / 180);
         }
-        else altitude = 0;
-        if (altitude > 30000)
+        if (freeY > 30000)
         {
-            altitude = 30000;
-            if (prevAlt < 30000) game.AddLog("高度3万m：これ以上は宇宙です！");
+            freeY = 30000;
+            if (prevAlt < 29000) game.AddLog("高度3万m：これ以上は宇宙です！");
         }
-        if (prevAlt > 0.5f && altitude <= 0)
+
+        // ---- 前へ進む（建物・急な山にはぶつかる） ----
+        double nx = f.PX + Math.Sin(hr) * ms * dt, nz = f.PZ + Math.Cos(hr) * ms * dt;
+        bool move = true;
+        crashCooldown -= dt;
+        var block = f.HitBlock(nx, nz, freeY + 0.8f, PlayerHalfWidth + 0.6f);
+        if (block != null)
+        {
+            if (playerKind == VehicleKind.Tank && Math.Abs(freeKmh) > 8)
+            {
+                DestroyBlock(block);   // 戦車はビルを突き破る
+                freeKmh *= 0.6f;
+            }
+            else if (flyer && airborne && Math.Abs(freeKmh) > 60)
+            {
+                AircraftCrash("ビルに激突！");
+                move = false;
+            }
+            else
+            {
+                if (Math.Abs(freeKmh) > 15 && crashCooldown <= 0)
+                {
+                    AddFxW(FxKind.Dust, f.PX + Math.Sin(hr) * 2, freeY + 0.8f, f.PZ + Math.Cos(hr) * 2, 1.3f);
+                    Audio.Play(Audio.Crash, Math.Min(1, Math.Abs(freeKmh) / 120));
+                    shake = Math.Max(shake, Math.Min(0.9f, Math.Abs(freeKmh) / 150));
+                    crashCooldown = 0.5f;
+                }
+                freeKmh = -freeKmh * 0.25f;   // はね返る
+                move = false;
+            }
+        }
+        if (move && !flyer && !carAir && Math.Abs(ms * dt) > 0.001f)
+        {
+            float nh = f.SurfaceY(nx, nz);
+            float slope = (nh - surface) / (float)Math.Abs(ms * dt);
+            if (slope > 1.1f && nh > surface + 0.3f)
+            {
+                // 急すぎる斜面は壁と同じ
+                if (Math.Abs(freeKmh) > 20 && crashCooldown <= 0)
+                {
+                    Audio.Play(Audio.Thud, 0.6f);
+                    shake = Math.Max(shake, 0.3f);
+                    crashCooldown = 0.5f;
+                }
+                freeKmh = -freeKmh * 0.2f;
+                move = false;
+            }
+            else freeKmh -= Math.Clamp(slope, -2, 2) * 35 * dt;   // 上り坂で遅く、下り坂で速く
+        }
+        if (move)
+        {
+            f.PX = nx;
+            f.PZ = nz;
+            animDist += Math.Abs(ms) * dt;
+        }
+
+        // ---- 高さ ----
+        road = f.OnRoad(f.PX, f.PZ);
+        bool land = road || f.IsLand(f.PX, f.PZ);
+        surface = f.SurfaceY(f.PX, f.PZ);
+        if (flyer)
+        {
+            ground = Math.Max(surface, f.RoofY(f.PX, f.PZ));
+            if (freeY < ground)
+            {
+                if (prevAlt > 2 && (vs < -15 || Math.Abs(freeKmh) > 220)) AircraftCrash("墜落！");
+                freeY = ground;
+            }
+            altitude = freeY - ground;
+            groundLevel = ground;
+            water = !land && altitude < 0.5f;
+        }
+        else
+        {
+            water = !land;
+            float targetY = land ? surface
+                : playerKind == VehicleKind.Amphibious ? FreeWorld.SeaY - 0.9f + MathF.Sin(time * 1.6f) * 0.15f
+                : FreeWorld.SeaY - 0.8f;
+            if (carAir)
+            {
+                carVy -= 22 * dt;
+                freeY += carVy * dt;
+                if (freeY <= targetY)
+                {
+                    if (carVy < -9)
+                    {
+                        AddFxW(FxKind.Dust, f.PX, targetY + 0.3f, f.PZ, Math.Min(2.5f, -carVy / 8));
+                        shake = Math.Max(shake, Math.Min(0.8f, -carVy / 30));
+                    }
+                    carAir = false;
+                    carVy = 0;
+                    freeY = targetY;
+                }
+            }
+            else
+            {
+                float prevY = freeY;
+                // 丘のてっぺんを速く越えると、地面が離れていってジャンプする
+                if (land && targetY < prevY - 0.6f && Math.Abs(ms) > 14 && climbRate > 1.5f)
+                {
+                    carAir = true;
+                    carVy = climbRate;
+                    freeY += carVy * dt;
+                    game.AddLog("ジャンプ！");
+                }
+                else freeY = targetY < prevY ? Math.Max(targetY, prevY - 40 * dt) : targetY;
+                climbRate = (freeY - prevY) / Math.Max(dt, 0.001f);
+            }
+            groundLevel = targetY;
+            altitude = 0;
+        }
+
+        // 坂に合わせて車体を傾ける
+        if (!flyer)
+        {
+            double fx = Math.Sin(hr), fz = Math.Cos(hr);
+            float hf = f.SurfaceY(f.PX + fx * 2, f.PZ + fz * 2), hb = f.SurfaceY(f.PX - fx * 2, f.PZ - fz * 2);
+            float hl = f.SurfaceY(f.PX - fz * 1.3, f.PZ + fx * 1.3), hrr = f.SurfaceY(f.PX + fz * 1.3, f.PZ - fx * 1.3);
+            float tp = carAir ? terrainPitch : MathF.Atan2(hf - hb, 4) * 180 / MathF.PI;
+            float tb = carAir ? terrainBank : MathF.Atan2(hl - hrr, 2.6f) * 180 / MathF.PI;
+            terrainPitch += (Math.Clamp(tp, -40, 40) - terrainPitch) * Math.Min(1, dt * 10);
+            terrainBank += (Math.Clamp(tb, -40, 40) - terrainBank) * Math.Min(1, dt * 10);
+        }
+
+        if (!prevAirborne && altitude > 0.5f && flyer) game.AddLog("離陸！");
+        else if (prevAirborne && altitude <= 0.5f && flyer && !crashedThisFrame)
         {
             AddFxW(FxKind.Dust, f.PX, groundLevel + 0.3f, f.PZ, vs < -12 ? 2.5f : 1.2f);
             shake = Math.Max(shake, vs < -12 ? 0.7f : 0.2f);
             game.AddLog(vs < -12 ? "ドスン！ 強めに着地しました。" : "着陸しました。");
         }
-        else if (prevAlt <= 0.5f && altitude > 0.5f) game.AddLog("離陸！");
-        airborne = altitude > 0.5f;
-        float bankTarget = flyer && airborne ? steer * (playerKind == VehicleKind.Helicopter ? 12 : 35) : 0;
+        prevAirborne = flyer && altitude > 0.5f;
+        crashedThisFrame = false;
+        float bankTarget = flyer && altitude > 0.5f ? steer * (playerKind == VehicleKind.Helicopter ? 12 : 35) : 0;
         bank += (bankTarget - bank) * Math.Min(1, dt * 3);
         rotor += dt * (playerKind == VehicleKind.Helicopter ? 1400 : playerKind == VehicleKind.Airplane ? 400 + Math.Abs(freeKmh) * 6 : 0);
         rotor %= 360000;
 
-        // 高く飛ぶほど遠くまで見えるようにする
-        scene.FogScale = 1 + altitude / 120f;
+        // 高いところ（山の上・空）ほど遠くまで見えるようにする
+        scene.FogScale = 1 + Math.Max(0, freeY) / 120f;
         f.ViewRadius = Math.Min(14000, 1000 * scene.FogScale);
         f.Altitude = altitude;
 
-        f.PX += Math.Sin(hr) * ms * dt;
-        f.PZ += Math.Cos(hr) * ms * dt;
-        animDist += Math.Abs(ms) * dt;
-
-        float targetY = road ? 0.06f : land ? 0
-            : airborne || flyer ? FreeWorld.SeaY
-            : playerKind == VehicleKind.Amphibious ? FreeWorld.SeaY - 0.9f + MathF.Sin(time * 1.6f) * 0.15f
-            : FreeWorld.SeaY - 0.8f;
-        if (airborne) water = false;
         if (water != freeOnWater)
         {
             freeOnWater = water;
             AddFxW(FxKind.Splash, f.PX, FreeWorld.SeaY, f.PZ, 1.6f);
-            if (water) game.AddLog(playerKind == VehicleKind.Amphibious ? "海へ入りました！ 水上を航行します。" : "海に入りました（水の中はゆっくりしか進めません）。");
+            if (water) game.AddLog(playerKind == VehicleKind.Amphibious ? "水に入りました！ 水上を航行します。" : "水に入りました（水の中はゆっくりしか進めません）。");
         }
-        groundLevel += (targetY - groundLevel) * Math.Min(1, dt * 8);
-        freeY = groundLevel + altitude;
         wakeTimer -= dt;
         if (water && Math.Abs(ms) > 2 && wakeTimer <= 0)
         {
@@ -209,8 +329,7 @@ public sealed partial class App
         f.UpdateTraffic(dt);
 
         // ほかの車にぶつかったらはね飛ばす
-        crashCooldown -= dt;
-        if (crashCooldown <= 0 && Math.Abs(ms) > 2 && !water && altitude < 2)
+        if (crashCooldown <= 0 && Math.Abs(ms) > 2 && !water && freeY - surface < 2)
         {
             var hit = f.HitTest(f.PX, f.PZ, 1, PlayerHalfWidth + PlayerLength * 0.3f);
             if (hit != null)
@@ -242,6 +361,35 @@ public sealed partial class App
         resetConfirm -= dt;
         UpdateCombat(dt, ms);
         UpdateCamera(dt);
+    }
+
+    // 地形まわりの状態
+    private bool carAir;            // 車がジャンプ中
+    private float carVy, climbRate;
+    private float terrainPitch, terrainBank;
+    private bool prevAirborne, crashedThisFrame;
+
+    /// <summary>飛行機・ヘリが山やビルにぶつかった（ゲームなので機体は無事で、その場に止まる）。</summary>
+    private void AircraftCrash(string what)
+    {
+        var f = free!;
+        AddFxW(FxKind.Fire, f.PX, freeY + 1, f.PZ, 2.2f);
+        shake = 1;
+        freeKmh = 0;
+        pitch = 0;
+        crashedThisFrame = true;
+        prevAirborne = false;
+        game.AddLog($"{what} 機体は無事でした。↑と Space でもう一度飛べます。");
+    }
+
+    /// <summary>建物を壊す（戦車の体当たり・砲撃）。</summary>
+    private void DestroyBlock(Block b)
+    {
+        b.Destroyed = true;
+        for (int i = 0; i < 3; i++) AddFxW(FxKind.Fire, b.X, b.H * (0.2f + i * 0.3f), b.Z, Math.Min(3.5f, 1.2f + b.H / 40));
+        AddFxW(FxKind.Dust, b.X, 1, b.Z, 3);
+        shake = Math.Max(shake, 0.6f);
+        destroyed++;
     }
 
     private void HandleFreeKeys()
@@ -310,6 +458,12 @@ public sealed partial class App
                 destroyed++;
                 return true;
             }
+            var bld = f.HitBlock(sh.WX, sh.WZ, sh.Y, 0.3f);
+            if (bld != null)
+            {
+                DestroyBlock(bld);
+                return true;
+            }
             float g = f.GroundY(sh.WX, sh.WZ);
             if (sh.Y <= g)
             {
@@ -342,7 +496,7 @@ public sealed partial class App
         if (!cockpit)
             scene.DrawVehicleAt(f.R(f.PX, freeY, f.PZ), -heading + steerYaw, PlayerColor, playerKind, FreeSpin,
                 braking: game.Brake, wheelSteer: playerKind == VehicleKind.Sports ? steerYaw * 2.5f : 0,
-                turretYaw: turretYaw, recoil: recoil, shadow: !freeOnWater);
+                turretYaw: turretYaw, recoil: recoil, shadow: !freeOnWater && !carAir, pitch: terrainPitch, bank: terrainBank);
         DrawCombat3D();
     }
 
@@ -407,17 +561,29 @@ public sealed partial class App
 
         // 近くの都市名と名所名を3Dの上に表示
         var look = Vector3.Normalize(camera.Target - camera.Position);
-        foreach (var c in MapData.Cities)
+        float labelRange = (float)Math.Max(1600, f.ViewRadius * 0.6);
+        foreach (var pl in f.Places)
         {
-            var (cx, cz) = FreeWorld.CityPos(c);
-            var p = f.R(cx, 70, cz);
+            var p = f.R(pl.X, 70 + pl.Radius * 0.05f, pl.Z);
             float d = p.Length();
-            if (d > 1600 || Vector3.Dot(p - camera.Position, look) < 5) continue;
+            if (d > labelRange || Vector3.Dot(p - camera.Position, look) < 5) continue;
             var sp = Raylib.GetWorldToScreen(p, camera);
-            float size = Math.Clamp(26 - d / 80, 13, 26);
-            var m = Measure(c.Name, size);
+            float size = Math.Clamp(26 - d / 80, 13, 26) - (pl.Tier >= 3 ? 2 : 0);
+            var m = Measure(pl.Name, size);
             Panel(sp.X - m.X / 2 - 8 * u, sp.Y - 4 * u, m.X + 16 * u, m.Y + 8 * u, new Color(10, 40, 80, 170));
-            Text(c.Name, sp.X - m.X / 2, sp.Y, size, Color.White);
+            Text(pl.Name, sp.X - m.X / 2, sp.Y, size, Color.White);
+        }
+        // 山の名前と標高
+        foreach (var (name, px, pz, elev) in f.PeakList)
+        {
+            var p = f.R(px, f.TerrainHeight(px, pz) + 25, pz);
+            float d = p.Length();
+            if (d > Math.Max(5000, f.ViewRadius) || Vector3.Dot(p - camera.Position, look) < 5) continue;
+            var sp = Raylib.GetWorldToScreen(p, camera);
+            string label = $"▲{name} {elev:0}m";
+            var m = Measure(label, 13);
+            Text(label, sp.X - m.X / 2 + 1, sp.Y + 1, 13, new Color(0, 0, 0, 160));
+            Text(label, sp.X - m.X / 2, sp.Y, 13, Rgb(255, 245, 220));
         }
         foreach (var (spot, pos) in f.SpotPos)
         {
@@ -433,14 +599,15 @@ public sealed partial class App
         }
 
         // 左上：状況
-        var (near, nd) = f.NearestCity(f.PX, f.PZ);
+        var (near, nd) = f.NearestPlace(f.PX, f.PZ);
         Panel(16 * u, 16 * u, 430 * u, 150 * u);
         float x = 32 * u, y = 28 * u;
         Text(Game.FormatClock(game.GameMinutes), x, y, 22, Orange);
         y += 32 * u;
         Text("フリーモード（道路も速度も自由）", x, y, 18, Color.White);
         y += 28 * u;
-        Text($"{near.Name}付近（中心まで {nd / 1000:0.0} km）　向き：{Compass(heading)}", x, y, 15, Rgb(220, 225, 235));
+        string elevText = IsFlyer(playerKind) && altitude > 0.5f ? "" : $"　標高 {Math.Max(0, groundLevel) / FreeWorld.VScale:N0} m";
+        Text($"{near}付近（{nd / 1000:0.0} km）　向き：{Compass(heading)}{elevText}", x, y, 15, Rgb(220, 225, 235));
         y += 26 * u;
         Text($"名所スタンプ {stamps.Count}/{Spots.All.Count}（B：スタンプ帳）{(destroyed > 0 ? $"　撃破 {destroyed}" : "")}", x, y, 15, Rgb(255, 200, 200));
 
@@ -510,8 +677,8 @@ public sealed partial class App
         var mp = new PointF(center.X + (mouse.X - origin.X) / scale, center.Y + (mouse.Y - origin.Y) / scale);
         var (wx, wz) = FreeWorld.FromMap(mp);
         var f = free!;
-        var (city, d) = f.NearestCity(wx, wz);
-        string where = d < 3000 ? $"{city.Name}付近" : "その地点";
+        var (placeName, d) = f.NearestPlace(wx, wz);
+        string where = d < 3000 ? $"{placeName}付近" : "その地点";
         if (left)
         {
             BeginFade(() =>
@@ -519,6 +686,8 @@ public sealed partial class App
                 f.PX = wx;
                 f.PZ = wz;
                 freeKmh = 0;
+                freeY = groundLevel = f.SurfaceY(wx, wz);
+                carAir = false;
                 f.Cars.Clear();
                 f.UpdateNear();
                 bigMap = false;

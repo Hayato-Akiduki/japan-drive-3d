@@ -20,46 +20,152 @@ public sealed class FreeCar
     public float Y, Vy, Vx, Vz, Roll, Spin, FlyTime;
 }
 
+/// <summary>町の建物（ぶつかる・壊せる）。</summary>
+public sealed class Block
+{
+    public double X, Z;
+    public float W, D, H;
+    public int Tone;
+    public bool Destroyed;
+}
+
+/// <summary>建物が建つ場所（高速道路の都市と、地図にない町）。</summary>
+public sealed class Place
+{
+    public required string Name;
+    public double X, Z;
+    public float Radius;
+    public int Tier;
+    public List<Block>? Blocks;
+}
+
+/// <summary>
+/// 陸と水（海・湖・川）の地図。Natural Earth の海岸線を 0.005 度（ゲーム内で約25m）のマス目に塗ったもの。
+/// </summary>
+public static class LandRaster
+{
+    public const double Lon0 = 122.5, Lat0 = 24.0, Res = 0.005;
+    public const int W = 5300, H = 4320;
+    private static readonly ulong[] Bits = Build();
+
+    public static bool Land(double lat, double lon)
+    {
+        int c = (int)((lon - Lon0) / Res), r = (int)((lat - Lat0) / Res);
+        if ((uint)c >= W || (uint)r >= H) return false;
+        long i = (long)r * W + c;
+        return (Bits[i >> 6] & (1UL << (int)(i & 63))) != 0;
+    }
+
+    private static void Set(ulong[] bits, int r, int c, bool v)
+    {
+        if ((uint)c >= W || (uint)r >= H) return;
+        long i = (long)r * W + c;
+        if (v) bits[i >> 6] |= 1UL << (int)(i & 63);
+        else bits[i >> 6] &= ~(1UL << (int)(i & 63));
+    }
+
+    /// <summary>多角形の内側を塗る（行ごとに辺との交点を求めて、交点の間を塗る）。</summary>
+    private static void Fill(ulong[] bits, IEnumerable<(double Lat, double Lon)[]> rings, bool value)
+    {
+        var rows = new List<double>?[H];
+        foreach (var ring in rings)
+        {
+            for (int i = 0; i < ring.Length; i++)
+            {
+                var a = ring[i];
+                var b = ring[(i + 1) % ring.Length];
+                double ya = (a.Lat - Lat0) / Res - 0.5, yb = (b.Lat - Lat0) / Res - 0.5;
+                double xa = (a.Lon - Lon0) / Res, xb = (b.Lon - Lon0) / Res;
+                if (ya == yb) continue;
+                int r0 = (int)Math.Ceiling(Math.Min(ya, yb)), r1 = (int)Math.Ceiling(Math.Max(ya, yb)) - 1;
+                for (int r = Math.Max(0, r0); r <= Math.Min(H - 1, r1); r++)
+                    (rows[r] ??= new()).Add(xa + (r - ya) * (xb - xa) / (yb - ya));
+            }
+        }
+        for (int r = 0; r < H; r++)
+        {
+            var xs = rows[r];
+            if (xs == null) continue;
+            xs.Sort();
+            for (int k = 0; k + 1 < xs.Count; k += 2)
+                for (int c = (int)Math.Ceiling(xs[k] - 0.5); c <= (int)Math.Floor(xs[k + 1] - 0.5); c++)
+                    Set(bits, r, c, value);
+        }
+    }
+
+    private static ulong[] Build()
+    {
+        var bits = new ulong[((long)W * H + 63) / 64];
+        Fill(bits, JapanOutline.Detailed, true);
+        Fill(bits, JapanGeo.Lakes.Select(l => JapanOutline.Decode(l.Points)), false);
+        // 川は線なので、太さをつけて水にする
+        foreach (var (_, rank, pts) in JapanGeo.Rivers)
+        {
+            var line = JapanOutline.Decode(pts);
+            double rad = rank <= 4 ? 1.6 : 1.1;
+            for (int i = 0; i + 1 < line.Length; i++)
+            {
+                double ya = (line[i].Lat - Lat0) / Res, xa = (line[i].Lon - Lon0) / Res;
+                double yb = (line[i + 1].Lat - Lat0) / Res, xb = (line[i + 1].Lon - Lon0) / Res;
+                int steps = (int)(Math.Max(Math.Abs(yb - ya), Math.Abs(xb - xa)) * 3) + 1;
+                for (int s = 0; s <= steps; s++)
+                {
+                    double y = ya + (yb - ya) * s / steps, x = xa + (xb - xa) * s / steps;
+                    for (int dr = -2; dr <= 2; dr++)
+                        for (int dc = -2; dc <= 2; dc++)
+                            if (dr * dr + dc * dc <= rad * rad) Set(bits, (int)y + dr, (int)x + dc, false);
+                }
+            }
+        }
+        return bits;
+    }
+}
+
 /// <summary>
 /// フリーモードの世界：日本地図をそのまま3Dにしたオープンワールド。
-/// 座標はメートル（X が東、Z が北）。地図の1度を <see cref="M"/> メートルに縮めている。
+/// 座標はメートル（X が東、Z が北）。地図の1度を <see cref="M"/> メートルに縮めている（実際の約22分の1）。
+/// 山は実際の位置と標高（高さは実際の 0.12 倍）で地形になっていて、登ったりぶつかったりできる。
 /// 描画はプレイヤー位置を原点にする（遠くまで走っても精度が落ちない）。
 /// </summary>
 public sealed class FreeWorld
 {
     public const double M = 5000;
-    private const double G = 50;          // 地面のマス目
-    /// <summary>描画範囲（m）。高く飛ぶほど広くなる。</summary>
-    public double ViewRadius = 1000;
-    public float Altitude;
+    public const float VScale = 0.12f;         // 実際の標高 → ゲームの高さ
+    private const double G = 50;               // 地面のマス目
+    private static readonly double Cos36 = Math.Cos(36 * Math.PI / 180);
 
     private readonly Scene scene;
     private readonly Random rng = new();
     public double PX, PZ;
     private Vector3 cam;
 
+    /// <summary>描画範囲（m）。高く飛ぶほど広くなる。</summary>
+    public double ViewRadius = 1000;
+    public float Altitude;
+
     private readonly record struct Seg(double Ax, double Az, double Bx, double Bz, Road Road)
     {
         public double Len => Math.Sqrt((Bx - Ax) * (Bx - Ax) + (Bz - Az) * (Bz - Az));
     }
 
-    private readonly List<Seg> segs = new();
-    private readonly List<(float[] Xs, float[] Ys)> polys = new();
-    private readonly Dictionary<long, bool> landCache = new();
-    private readonly Dictionary<City, List<(double X, double Z, float W, float D, float H, int Tone)>> cityBlocks = new();
-    private List<int> nearSegs = new();
+    private readonly record struct Peak(string Name, double X, double Z, float H, float R, float Elev);
 
+    private readonly List<Seg> segs = new();
+    private readonly List<Peak> peaks = new();
+    private List<int> nearSegs = new();
+    private readonly Dictionary<(long, long, int), float> heightCache = new();
+
+    public List<Place> Places { get; } = new();
     public Dictionary<Spot, (double X, double Z)> SpotPos { get; } = new();
+    public HashSet<Spot> TerrainSpots { get; } = new();   // 地形そのものが名所（模型は置かない）
+    public HashSet<Spot> SmokeSpots { get; } = new();     // 噴煙だけ出す
     public List<FreeCar> Cars { get; } = new();
+    public IReadOnlyList<(string Name, double X, double Z, float Elev)> PeakList =>
+        peaks.Select(p => (p.Name, p.X, p.Z, p.Elev)).ToList();
 
     public FreeWorld(Scene scene)
     {
         this.scene = scene;
-        foreach (var island in JapanOutline.Islands)
-        {
-            var pts = island.Select(p => Game.ToWorld(p.Lat, p.Lon)).ToArray();
-            polys.Add((pts.Select(p => p.X).ToArray(), pts.Select(p => p.Y).ToArray()));
-        }
         foreach (var r in MapData.Roads)
         {
             if (r.Type == RoadType.Ferry) continue;
@@ -67,47 +173,47 @@ public sealed class FreeWorld
             var (bx, bz) = CityPos(r.B);
             segs.Add(new Seg(ax, az, bx, bz, r));
         }
+        foreach (var (name, lat, lon, elev) in GeoFeatures.Peaks)
+        {
+            var (x, z) = FromLatLon(lat, lon);
+            float rKm = 5 + elev / 300f;
+            peaks.Add(new Peak(name, x, z, elev * VScale, rKm * 1000 / 22.2f, elev));
+        }
+        foreach (var c in MapData.Cities)
+        {
+            var (x, z) = CityPos(c);
+            int tier = c.Name is "東京" or "大阪" ? 0 : c.IsGoal ? 1 : 2;
+            Places.Add(new Place { Name = c.Name, X = x, Z = z, Tier = tier, Radius = TierRadius(tier) });
+        }
+        foreach (var (name, lat, lon, tier) in GeoFeatures.Towns)
+        {
+            var (x, z) = FromLatLon(lat, lon);
+            Places.Add(new Place { Name = name, X = x, Z = z, Tier = tier, Radius = TierRadius(tier) });
+        }
+        _ = LandRaster.Land(0, 0);   // 地図を先に作っておく
         PlaceSpots();
     }
+
+    private static float TierRadius(int tier) => tier switch { 0 => 950, 1 => 650, 2 => 420, _ => 270 };
 
     // ---------------- 座標 ----------------
 
     public static (double X, double Z) FromMap(PointF p) => (p.X * M, -p.Y * M);
     public static PointF ToMap(double x, double z) => new((float)(x / M), (float)(-z / M));
     public static (double X, double Z) CityPos(City c) => FromMap(Game.ToWorld(c));
+    public static (double X, double Z) FromLatLon(double lat, double lon) => FromMap(Game.ToWorld(lat, lon));
+    public static (double Lat, double Lon) ToLatLon(double x, double z) => (37 + z / M, 137 + x / M / Cos36);
 
     /// <summary>ワールド座標 → 描画座標（画面の右が -X なので東を -X にする）。</summary>
     public Vector3 R(double x, float y, double z) => new((float)-(x - PX), y, (float)(z - PZ));
 
     public bool IsLand(double x, double z)
     {
-        float mx = (float)(x / M), my = (float)(-z / M);
-        foreach (var (xs, ys) in polys)
-        {
-            bool inside = false;
-            for (int i = 0, j = xs.Length - 1; i < xs.Length; j = i++)
-            {
-                if ((ys[i] > my) != (ys[j] > my) &&
-                    mx < (xs[j] - xs[i]) * (my - ys[i]) / (ys[j] - ys[i]) + xs[i])
-                    inside = !inside;
-            }
-            if (inside) return true;
-        }
-        return false;
+        var (lat, lon) = ToLatLon(x, z);
+        return LandRaster.Land(lat, lon);
     }
 
-    private bool LandAt(long ix, long iz)
-    {
-        long key = (ix << 32) ^ (iz & 0xffffffffL);
-        if (landCache.TryGetValue(key, out bool v)) return v;
-        if (landCache.Count > 300000) landCache.Clear();
-        v = IsLand(ix * G, iz * G);
-        landCache[key] = v;
-        return v;
-    }
-
-    /// <summary>おおまかな陸判定（グリッドのキャッシュを使う）。</summary>
-    public bool IsLandFast(double x, double z) => LandAt((long)Math.Round(x / G), (long)Math.Round(z / G));
+    public bool IsLandFast(double x, double z) => IsLand(x, z);
 
     private static double SegDistance(Seg s, double x, double z, out double t)
     {
@@ -118,14 +224,14 @@ public sealed class FreeWorld
         return Math.Sqrt(px * px + pz * pz);
     }
 
-    /// <summary>道路（橋）の上にいるか。</summary>
-    private bool OnAnyRoad(double x, double z, double width)
+    private double RoadDistance(double x, double z)
     {
-        foreach (var s in segs)
-            if (SegDistance(s, x, z, out _) < width) return true;
-        return false;
+        double best = double.MaxValue;
+        foreach (var s in segs) best = Math.Min(best, SegDistance(s, x, z, out _));
+        return best;
     }
 
+    /// <summary>道路（橋）の上にいるか。</summary>
     public bool OnRoad(double x, double z, double width = 9)
     {
         foreach (int i in nearSegs)
@@ -133,18 +239,85 @@ public sealed class FreeWorld
         return false;
     }
 
-    public float GroundY(double x, double z) => OnRoad(x, z) ? 0.06f : IsLandFast(x, z) ? 0 : SeaY;
     public const float SeaY = -1.2f;
 
-    public (City City, double Dist) NearestCity(double x, double z)
+    // ---------------- 地形の高さ ----------------
+
+    private static float Smooth(double e0, double e1, double x)
     {
-        City best = MapData.Cities[0];
-        double bd = double.MaxValue;
-        foreach (var c in MapData.Cities)
+        double t = Math.Clamp((x - e0) / (e1 - e0), 0, 1);
+        return (float)(t * t * (3 - 2 * t));
+    }
+
+    /// <summary>陸地の高さ（m）。山・丘を足し、道路と町のまわりは平らにする。</summary>
+    public float TerrainHeight(double x, double z)
+    {
+        float h = 0;
+        foreach (var p in peaks)
         {
-            var (cx, cz) = CityPos(c);
-            double d = Math.Sqrt((cx - x) * (cx - x) + (cz - z) * (cz - z));
-            if (d < bd) { bd = d; best = c; }
+            double dx = x - p.X, dz = z - p.Z;
+            if (Math.Abs(dx) > p.R || Math.Abs(dz) > p.R) continue;
+            double t = Math.Sqrt(dx * dx + dz * dz) / p.R;
+            if (t >= 1) continue;
+            float v = p.H * (float)Math.Pow(1 - t, 1.7);
+            h = Math.Max(h, v) + Math.Min(h, v) * 0.25f;   // 近くの山は少し足し合わせて山脈らしく
+        }
+        // 小さな丘（地形の起伏）
+        const double cell = 900;
+        long cx = (long)Math.Floor(x / cell), cz = (long)Math.Floor(z / cell);
+        float hills = 0;
+        for (long i = cx - 1; i <= cx + 1; i++)
+        {
+            for (long j = cz - 1; j <= cz + 1; j++)
+            {
+                long id = i * 92821 + j * 68917 + 7;
+                if (Scene.Hash(id) > 0.45f) continue;
+                double hx = (i + Scene.Hash(id + 1)) * cell, hz = (j + Scene.Hash(id + 2)) * cell;
+                float hr = 350 + Scene.Hash(id + 3) * 450, hh = 12 + Scene.Hash(id + 4) * 55;
+                double t = Math.Sqrt((x - hx) * (x - hx) + (z - hz) * (z - hz)) / hr;
+                if (t < 1) hills += hh * (float)(1 - t * t) * (float)(1 - t * t);
+            }
+        }
+        h = Math.Max(h, hills) + Math.Min(h, hills) * 0.3f;
+        if (h < 0.05f) return 0;
+
+        // 道路と町のまわりは平らに（高速道路は山を切り開いて通っている）
+        float flat = Smooth(25, 260, RoadDistance(x, z));
+        foreach (var pl in Places)
+        {
+            double dx = x - pl.X, dz = z - pl.Z;
+            double lim = pl.Radius + 450;
+            if (Math.Abs(dx) > lim || Math.Abs(dz) > lim) continue;
+            flat = Math.Min(flat, Smooth(pl.Radius, lim, Math.Sqrt(dx * dx + dz * dz)));
+        }
+        return h * flat;
+    }
+
+    private float HeightAt(long ix, long iz, int lvl, double step)
+    {
+        var key = (ix, iz, lvl);
+        if (heightCache.TryGetValue(key, out float v)) return v;
+        if (heightCache.Count > 400000) heightCache.Clear();
+        double x = ix * step, z = iz * step;
+        v = IsLand(x, z) ? TerrainHeight(x, z) : SeaY;
+        heightCache[key] = v;
+        return v;
+    }
+
+    /// <summary>その場所の地面の高さ（道路・陸・水）。</summary>
+    public float SurfaceY(double x, double z) =>
+        OnRoad(x, z) ? 0.06f : IsLand(x, z) ? TerrainHeight(x, z) : SeaY;
+
+    public float GroundY(double x, double z) => SurfaceY(x, z);
+
+    public (string Name, double Dist) NearestPlace(double x, double z)
+    {
+        string best = Places[0].Name;
+        double bd = double.MaxValue;
+        foreach (var p in Places)
+        {
+            double d = Math.Sqrt((p.X - x) * (p.X - x) + (p.Z - z) * (p.Z - z));
+            if (d < bd) { bd = d; best = p.Name; }
         }
         return (best, bd);
     }
@@ -158,11 +331,19 @@ public sealed class FreeWorld
             for (int i = 0; i < spots.Count; i++)
             {
                 var sp = spots[i];
+                if (GeoFeatures.RealSpots.TryGetValue(sp.Name, out var real))
+                {
+                    // 富士山や支笏湖などは、本物の場所そのものが名所
+                    SpotPos[sp] = FromLatLon(real.Lat, real.Lon);
+                    TerrainSpots.Add(sp);
+                    if (real.Smoke) SmokeSpots.Add(sp);
+                    continue;
+                }
                 double d = sp.Type switch
                 {
                     LandmarkType.Mountain or LandmarkType.Volcano => 1900,
                     LandmarkType.Lake => 1000,
-                    _ => 520 + i * 120,
+                    _ => TierRadius(city.IsGoal ? 1 : 2) + 150 + i * 120,
                 };
                 double baseAng = Scene.Hash(sp.Name.GetHashCode()) * Math.PI * 2 + i * Math.PI;
                 (double, double) pos = (cx + Math.Sin(baseAng) * d, cz + Math.Cos(baseAng) * d);
@@ -170,7 +351,7 @@ public sealed class FreeWorld
                 {
                     double a = baseAng + k * Math.PI / 4;
                     double x = cx + Math.Sin(a) * d, z = cz + Math.Cos(a) * d;
-                    if (IsLand(x, z)) { pos = (x, z); break; }
+                    if (IsLand(x, z) && TerrainHeight(x, z) < 15) { pos = (x, z); break; }
                 }
                 SpotPos[sp] = pos;
             }
@@ -185,6 +366,69 @@ public sealed class FreeWorld
         LandmarkType.Tower or LandmarkType.Castle => 130,
         _ => 90,
     };
+
+    // ---------------- 建物（ぶつかる・壊せる） ----------------
+
+    private List<Block> Blocks(Place place)
+    {
+        if (place.Blocks != null) return place.Blocks;
+        var list = new List<Block>();
+        double radius = place.Radius;
+        const double cell = 38;
+        int n = (int)(radius / cell);
+        var roadsHere = segs.Where(s => SegDistance(s, place.X, place.Z, out _) < radius + 50).ToList();
+        float maxH = place.Tier switch { 0 => 190, 1 => 115, 2 => 55, _ => 28 };
+        for (int i = -n; i <= n; i++)
+        {
+            for (int j = -n; j <= n; j++)
+            {
+                long id = (i + 1000) * 7919L + (j + 1000) * 104729L + place.Name.GetHashCode();
+                double x = place.X + (i + Scene.Hash(id) * 0.4) * cell, z = place.Z + (j + Scene.Hash(id + 1) * 0.4) * cell;
+                double d = Math.Sqrt((x - place.X) * (x - place.X) + (z - place.Z) * (z - place.Z));
+                if (d > radius || Scene.Hash(id + 2) > 0.75 - d / radius * 0.4) continue;
+                if (!IsLand(x, z) || roadsHere.Any(s => SegDistance(s, x, z, out _) < 20)) continue;
+                float near = (float)(1 - d / radius);
+                float h = 8 + near * near * maxH * Scene.Hash(id + 3) + Scene.Hash(id + 4) * 10;
+                list.Add(new Block
+                {
+                    X = x, Z = z, H = h,
+                    W = 12 + Scene.Hash(id + 5) * 16, D = 12 + Scene.Hash(id + 6) * 16,
+                    Tone = (int)(Scene.Hash(id + 7) * 80),
+                });
+            }
+        }
+        place.Blocks = list;
+        return list;
+    }
+
+    /// <summary>点（半径 radius の円）が建物にめり込んでいたら、その建物を返す。</summary>
+    public Block? HitBlock(double x, double z, float y, float radius)
+    {
+        foreach (var place in Places)
+        {
+            double lim = place.Radius + 60;
+            if (Math.Abs(x - place.X) > lim || Math.Abs(z - place.Z) > lim) continue;
+            foreach (var b in Blocks(place))
+            {
+                if (b.Destroyed || y > b.H) continue;
+                if (Math.Abs(x - b.X) < b.W / 2 + radius && Math.Abs(z - b.Z) < b.D / 2 + radius) return b;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>屋根の上に乗れるように、その場所の建物の高さを返す（なければ 0）。</summary>
+    public float RoofY(double x, double z)
+    {
+        foreach (var place in Places)
+        {
+            double lim = place.Radius + 60;
+            if (Math.Abs(x - place.X) > lim || Math.Abs(z - place.Z) > lim) continue;
+            foreach (var b in Blocks(place))
+                if (!b.Destroyed && Math.Abs(x - b.X) < b.W / 2 && Math.Abs(z - b.Z) < b.D / 2) return b.H;
+        }
+        return 0;
+    }
 
     // ---------------- 更新 ----------------
 
@@ -229,7 +473,6 @@ public sealed class FreeWorld
             if (dx * dx + dz * dz > 1600 * 1600) Cars.RemoveAt(i);
         }
 
-        // 近くの道路に車を出す
         int tries = 0;
         while (Cars.Count < 16 && nearSegs.Count > 0 && tries++ < 6)
         {
@@ -307,7 +550,6 @@ public sealed class FreeWorld
         scene.SetCamera(cameraPos);
         DrawGround();
         DrawRoads();
-        DrawMountains();
         DrawTrees();
         DrawCities();
         foreach (var (spot, pos) in SpotPos)
@@ -315,26 +557,26 @@ public sealed class FreeWorld
             double dx = pos.X - PX, dz = pos.Z - PZ;
             float range = (spot.Type is LandmarkType.Mountain or LandmarkType.Volcano ? 2600 : 1300) * Math.Max(1, (float)ViewRadius / 1500);
             if (dx * dx + dz * dz > range * range) continue;
-            Landmarks.Draw(scene, spot, R(pos.X, IsLandFast(pos.X, pos.Z) ? 0 : SeaY + 1, pos.Z), time);
+            if (SmokeSpots.Contains(spot)) DrawSmoke(pos.X, pos.Z, time);
+            if (TerrainSpots.Contains(spot)) continue;
+            Landmarks.Draw(scene, spot, R(pos.X, IsLand(pos.X, pos.Z) ? TerrainHeight(pos.X, pos.Z) : SeaY + 1, pos.Z), time);
         }
         foreach (var c in Cars)
             scene.DrawVehicleAt(R(c.X, c.Y, c.Z), -c.Heading, c.Color, c.Kind, c.Dist / 0.33f * 57.3f % 360,
                 roll: c.Roll, shadow: !c.Flying);
     }
 
-    private readonly Dictionary<(long, long, int), bool> lodCache = new();
-
-    /// <summary>粗いマス目（lvl が大きいほど粗い）での陸判定。</summary>
-    private bool LandLod(long ix, long iz, int lvl)
+    /// <summary>噴煙（桜島）。</summary>
+    private void DrawSmoke(double x, double z, float time)
     {
-        if (lvl == 0) return LandAt(ix, iz);
-        var key = (ix, iz, lvl);
-        if (lodCache.TryGetValue(key, out bool v)) return v;
-        if (lodCache.Count > 300000) lodCache.Clear();
-        double st = G * (1 << lvl);
-        v = IsLand(ix * st, iz * st);
-        lodCache[key] = v;
-        return v;
+        float top = TerrainHeight(x, z);
+        var steam = new Color((byte)225, (byte)225, (byte)225, (byte)160);
+        for (int i = 0; i < 9; i++)
+        {
+            float rise = (time * 6 + i * 22) % 200;
+            var p = R(x + Math.Sin(i * 1.7) * 8 + rise * 0.4, top + 10 + rise, z);
+            Raylib.DrawSphereEx(p, 16 + rise * 0.2f, 8, 8, scene.LandmarkFog(steam, p));
+        }
     }
 
     private void DrawGround()
@@ -360,18 +602,29 @@ public sealed class FreeWorld
 
         void Vert(long ix, long iz)
         {
-            bool land = LandLod(ix, iz, lvl);
+            float h = HeightAt(ix, iz, lvl, step);
             Color c;
-            if (!land) c = sea;
-            else if (!LandLod(ix + 1, iz, lvl) || !LandLod(ix - 1, iz, lvl) || !LandLod(ix, iz + 1, lvl) || !LandLod(ix, iz - 1, lvl)) c = sand;
+            if (h <= SeaY + 0.01f) c = sea;
             else
             {
-                float h = Scene.Hash(ix * 73856093L ^ iz * 19349663L);
-                // 北の方は少し白っぽい草原
-                float north = Math.Clamp((float)((iz * step / M) - 4) / 5f, 0, 1);
-                c = Lerp(Rgb(86 + (int)(h * 18), 146 + (int)(h * 14), 70), Rgb(150, 175, 130), north * 0.6f);
+                float hx = HeightAt(ix + 1, iz, lvl, step), hz = HeightAt(ix, iz + 1, lvl, step);
+                if (hx <= SeaY + 0.01f || hz <= SeaY + 0.01f || HeightAt(ix - 1, iz, lvl, step) <= SeaY + 0.01f || HeightAt(ix, iz - 1, lvl, step) <= SeaY + 0.01f)
+                    c = sand;
+                else
+                {
+                    float noise = Scene.Hash(ix * 73856093L ^ iz * 19349663L);
+                    float north = Math.Clamp((float)((iz * step / M) - 4) / 5f, 0, 1);
+                    // 高さで色を変える：草原 → 森 → 岩 → 雪
+                    c = Lerp(Rgb(86 + (int)(noise * 18), 146 + (int)(noise * 14), 70), Rgb(150, 175, 130), north * 0.6f);
+                    if (h > 25) c = Lerp(c, Rgb(52, 98, 55), Math.Clamp((h - 25) / 80, 0, 1));
+                    if (h > 150) c = Lerp(c, Rgb(118, 110, 96), Math.Clamp((h - 150) / 90, 0, 1));
+                    if (h > 300) c = Lerp(c, Rgb(242, 244, 248), Math.Clamp((h - 300) / 60, 0, 1));
+                    // 斜面の向きで明るさを変える（立体感）
+                    float shade = 1 + Math.Clamp((float)((h - hx) * 0.5 + (h - hz) * 0.8) / (float)step * 2.2f, -0.35f, 0.25f);
+                    c = new Color((byte)Math.Clamp(c.R * shade, 0, 255), (byte)Math.Clamp(c.G * shade, 0, 255), (byte)Math.Clamp(c.B * shade, 0, 255), (byte)255);
+                }
             }
-            V(ix * step, land ? 0 : SeaY, iz * step, c);
+            V(ix * step, h, iz * step, c);
         }
     }
 
@@ -420,8 +673,8 @@ public sealed class FreeWorld
                     Strip(-4.1, -3.9, 0.09f, white);
                     Strip(3.9, 4.1, 0.09f, white);
                 }
-                // 海の上は橋：桁と欄干
-                if (!IsLandFast((ax + bx) / 2, (az + bz) / 2))
+                // 海・湖・川の上は橋：桁と欄干
+                if (!IsLand((ax + bx) / 2, (az + bz) / 2))
                 {
                     float deep = s.Road.Type == RoadType.MegaBridge ? -12 : SeaY;
                     Side(-8, deep, 0.06f, girder);
@@ -432,39 +685,6 @@ public sealed class FreeWorld
             }
         }
         Rlgl.End();
-    }
-
-    private readonly Dictionary<long, (double X, double Z, float R, float H)?> mountainCache = new();
-
-    private void DrawMountains()
-    {
-        const double slot = 500;
-        double range = Math.Max(1450, ViewRadius * 1.1);
-        int n = (int)(range / slot) + 1;
-        long cx = (long)Math.Floor(PX / slot), cz = (long)Math.Floor(PZ / slot);
-        for (long i = cx - n; i <= cx + n; i++)
-        {
-            for (long j = cz - n; j <= cz + n; j++)
-            {
-                long id = i * 92821 + j * 68917;
-                if (!mountainCache.TryGetValue(id, out var mt))
-                {
-                    mt = null;
-                    if (Scene.Hash(id) <= 0.3f)
-                    {
-                        double mx = (i + Scene.Hash(id + 1)) * slot, mz = (j + Scene.Hash(id + 2)) * slot;
-                        if (IsLand(mx, mz) && !OnAnyRoad(mx, mz, 260) && NearestCity(mx, mz).Dist >= 1300)
-                            mt = (mx, mz, 110 + Scene.Hash(id + 3) * 150, 60 + Scene.Hash(id + 4) * 170);
-                    }
-                    mountainCache[id] = mt;
-                }
-                if (mt is not (double x, double z, float r, float hgt)) continue;
-                var p = R(x, -0.3f, z);
-                if (p.Length() > range) continue;
-                Raylib.DrawCylinder(p, 0, r, hgt, 10, scene.LandmarkFog(Rgb(70, 108, 80), p));
-                if (hgt > 180) Raylib.DrawCylinder(p + new Vector3(0, hgt * 0.78f, 0), 0, r * 0.22f, hgt * 0.22f, 10, scene.LandmarkFog(Rgb(240, 242, 245), p));
-            }
-        }
     }
 
     private void DrawTrees()
@@ -480,12 +700,14 @@ public sealed class FreeWorld
                 long id = i * 73856093L ^ j * 19349663L;
                 if (Scene.Hash(id) > 0.22f) continue;
                 double x = (i + Scene.Hash(id + 1)) * slot, z = (j + Scene.Hash(id + 2)) * slot;
-                if (!IsLandFast(x, z) || OnRoad(x, z, 18)) continue;
-                var p = R(x, 0, z);
+                if (!IsLand(x, z) || OnRoad(x, z, 18)) continue;
+                float gy = TerrainHeight(x, z);
+                if (gy > 330) continue;   // 雪のある山頂には木がない
+                var p = R(x, gy, z);
                 float d = Vector3.Distance(p, cam);
                 if (d > 520) continue;
                 float h = 6 + Scene.Hash(id + 3) * 7;
-                bool pine = Scene.Hash(id + 4) < 0.5f;
+                bool pine = gy > 60 || Scene.Hash(id + 4) < 0.5f;
                 Raylib.DrawCylinder(p, 0.25f, 0.35f, h * 0.35f, 5, scene.FogC(Rgb(90, 65, 45), d));
                 var leaf = scene.FogC(pine ? Rgb(40, 95, 50) : Rgb(70, 130, 55), d);
                 var top = p + new Vector3(0, h * 0.25f, 0);
@@ -495,45 +717,23 @@ public sealed class FreeWorld
         }
     }
 
-    private List<(double X, double Z, float W, float D, float H, int Tone)> Blocks(City city)
-    {
-        if (cityBlocks.TryGetValue(city, out var list)) return list;
-        list = new();
-        var (cx, cz) = CityPos(city);
-        double radius = city.IsGoal ? 650 : 380;
-        const double cell = 38;
-        int n = (int)(radius / cell);
-        var roadsHere = segs.Where(s => SegDistance(s, cx, cz, out _) < radius + 50).ToList();
-        for (int i = -n; i <= n; i++)
-        {
-            for (int j = -n; j <= n; j++)
-            {
-                long id = (i + 1000) * 7919L + (j + 1000) * 104729L + city.Name.GetHashCode();
-                double x = cx + (i + Scene.Hash(id) * 0.4) * cell, z = cz + (j + Scene.Hash(id + 1) * 0.4) * cell;
-                double d = Math.Sqrt((x - cx) * (x - cx) + (z - cz) * (z - cz));
-                if (d > radius || Scene.Hash(id + 2) > 0.75 - d / radius * 0.4) continue;
-                if (!IsLand(x, z) || roadsHere.Any(s => SegDistance(s, x, z, out _) < 20)) continue;
-                float near = (float)(1 - d / radius);
-                float h = 8 + near * near * (city.IsGoal ? 110 : 45) * Scene.Hash(id + 3) + Scene.Hash(id + 4) * 10;
-                list.Add((x, z, 12 + Scene.Hash(id + 5) * 16, 12 + Scene.Hash(id + 6) * 16, h, (int)(Scene.Hash(id + 7) * 80)));
-            }
-        }
-        cityBlocks[city] = list;
-        return list;
-    }
-
     private void DrawCities()
     {
-        foreach (var city in MapData.Cities)
+        foreach (var place in Places)
         {
-            var (cx, cz) = CityPos(city);
-            double range = Math.Max(1800, ViewRadius);
-            if ((cx - PX) * (cx - PX) + (cz - PZ) * (cz - PZ) > range * range) continue;
-            foreach (var b in Blocks(city))
+            double range = Math.Max(1800, ViewRadius) + place.Radius;
+            if ((place.X - PX) * (place.X - PX) + (place.Z - PZ) * (place.Z - PZ) > range * range) continue;
+            foreach (var b in Blocks(place))
             {
-                var p = R(b.X, b.H / 2, b.Z);
+                var p = R(b.X, b.Destroyed ? 1 : b.H / 2, b.Z);
                 float d = Vector3.Distance(p, cam);
                 if (d > Math.Max(900, ViewRadius * 0.85) || (d > 2500 && b.H < 30)) continue;
+                if (b.Destroyed)
+                {
+                    // がれき
+                    Raylib.DrawCube(p, b.W * 0.9f, 2, b.D * 0.9f, scene.FogC(Rgb(95, 90, 85), d));
+                    continue;
+                }
                 int g = 150 + b.Tone;
                 var c = scene.Night
                     ? scene.FogC(Lerp(Rgb(40, 40, 50), Rgb(230, 200, 120), (b.Tone % 10) / 18f), d, lit: true)
