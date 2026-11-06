@@ -21,9 +21,10 @@
 
 ## ダウンロード
 
-[Releases](https://github.com/Hayato-Akiduki/japan-drive-3d/releases/latest) から **`JapanDrive3D-Setup-<バージョン>.exe`（インストーラー）** をダウンロードして実行してください。スタートメニューとデスクトップにショートカットができ、Windows の「設定 → アプリ」からアンインストールできます。管理者権限はいりません（Windows 10/11 の 64bit 用、.NET のインストールも不要です）。
+[Releases](https://github.com/Hayato-Akiduki/japan-drive-3d/releases/latest) から、どちらかをダウンロードしてください（Windows 10/11 の 64bit 用、.NET のインストールは不要です）。
 
-v1.2.0 までは zip 版も置いていましたが、これからはインストーラーだけになります。過去のバージョンは [Releases](https://github.com/Hayato-Akiduki/japan-drive-3d/releases) にあります。
+- **インストーラー（おすすめ）**：`JapanDrive3D-Setup-<バージョン>.exe` を実行。スタートメニューとデスクトップにショートカットができ、Windows の「設定 → アプリ」からアンインストールできます。管理者権限はいりません。
+- **zip 版**：[JapanDrive3D-win-x64.zip](https://github.com/Hayato-Akiduki/japan-drive-3d/releases/latest/download/JapanDrive3D-win-x64.zip) を右クリック →「すべて展開」し、中の `JapanDrive3D.exe` をダブルクリック。過去のバージョンは [Releases](https://github.com/Hayato-Akiduki/japan-drive-3d/releases) にあります。
 
 初回に「Windows によって PC が保護されました」と出たら、「詳細情報」→「実行」を押してください（署名のない自作アプリのため表示されます）。
 
@@ -47,7 +48,7 @@ v1.2.0 までは zip 版も置いていましたが、これからはインス�
 # 遊ぶ（開発中）
 dotnet run --project JapanDrive3D
 
-# 配布物（インストーラー）を作る：配布/JapanDrive3D-Setup-<バージョン>.exe ができる
+# 配布物を作る：配布/ にインストーラー（JapanDrive3D-Setup-<バージョン>.exe）と zip（JapanDrive3D-win-x64.zip）ができる
 powershell -ExecutionPolicy Bypass -File tools/build-release.ps1
 ```
 
@@ -56,7 +57,12 @@ powershell -ExecutionPolicy Bypass -File tools/build-release.ps1
 ### 新しいバージョンを出すとき（自動更新に届けるには）
 
 1. `JapanDrive3D/JapanDrive3D.csproj` の `<Version>` を上げる（例：1.1.0 → 1.2.0）
-2. `tools/build-release.ps1` でインストーラーを作る
-3. GitHub に同じ番号のリリース（タグ `v1.2.0`）を作り、インストーラーだけを添付する
+2. `tools/build-release.ps1` でインストーラーと zip を作る
+3. GitHub に同じ番号のリリース（タグ `v1.2.0`）を作り、**インストーラーと zip の両方**を添付する
 
-ゲームは起動時に `releases/latest` を見て、タグの番号が自分より新しければ更新を案内します。自動更新はリリースの中の `JapanDrive3D-Setup-<番号>.exe` を探して `/S /UPDATE /D=<今のフォルダ>` で実行するので、インストーラーの名前は変えないでください。
+ゲームは起動時に `releases/latest` を見て、タグの番号が自分より新しければ更新を案内します。
+
+- 新しいゲーム（v1.3.0 以降）は `JapanDrive3D-Setup-<番号>.exe` を探して `/S /UPDATE /D=<今のフォルダ>` で実行します
+- 古いゲーム（v1.1.0 / v1.2.0）は `JapanDrive3D-win-x64.zip` を探して exe を入れ替えます
+
+どちらかを置き忘れると、その版のゲームには更新が届かないので、両方とも名前を変えずに置いてください。
