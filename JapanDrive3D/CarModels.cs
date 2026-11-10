@@ -4,7 +4,7 @@ using static JapanDrive.Draw;
 
 namespace JapanDrive;
 
-public enum VehicleKind { Sedan, Minivan, Kei, Truck, Sports, Tank, Amphibious, Horse, Hikyaku, Helicopter, Airplane }
+public enum VehicleKind { Sedan, Minivan, Kei, Truck, Sports, Tank, Amphibious, Horse, Hikyaku, Helicopter, Airplane, Fighter }
 
 /// <summary>
 /// ローポリの車モデル。側面の輪郭（プロファイル）を押し出したボディ＋窓のキャビン＋細部パーツで組み立てる。
@@ -69,7 +69,7 @@ public static class CarModels
         VehicleKind.Truck => 10.2f,
         VehicleKind.Tank => 7.6f,
         VehicleKind.Horse or VehicleKind.Hikyaku => Characters.Length(kind),
-        VehicleKind.Helicopter or VehicleKind.Airplane => Aircraft.Length(kind),
+        VehicleKind.Helicopter or VehicleKind.Airplane or VehicleKind.Fighter => Aircraft.Length(kind),
         VehicleKind.Amphibious => 8.1f,
         VehicleKind.Kei => 3.4f,
         _ => 4.6f,
@@ -333,7 +333,7 @@ public static class CarModels
     public static void Draw(Scene scene, VehicleKind kind, Color body, float dist, bool braking, float wheelSteer, float wheelSpin,
         float turretYaw = 0, float recoil = 0, bool shadow = true)
     {
-        if (kind is VehicleKind.Helicopter or VehicleKind.Airplane)
+        if (kind is VehicleKind.Helicopter or VehicleKind.Airplane or VehicleKind.Fighter)
         {
             Aircraft.Draw(scene, kind, body, dist, wheelSpin, true);
             return;

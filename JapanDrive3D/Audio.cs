@@ -16,7 +16,7 @@ public static unsafe class Audio
     public static bool BgmOn { get; set; } = true;
     public static bool SfxOn { get; set; } = true;
 
-    public static Sound Cannon, Explosion, Splash, Stamp, Crash, Thud, Beep, Etc, Neigh, Siren, Fanfare, Whoosh, Select;
+    public static Sound Cannon, MachineGun, BombDrop, Explosion, Splash, Stamp, Crash, Thud, Beep, Etc, Neigh, Siren, Fanfare, Whoosh, Select;
     private static Sound[] bgm = Array.Empty<Sound>();
     private static int bgmTrack = -1;
 
@@ -116,6 +116,27 @@ public static unsafe class Audio
                  + n1() * 3f * MathF.Exp(-t * 3f)
                  + (t < 0.025f ? Noise() * (1 - t / 0.025f) : 0);
         }));
+
+        // 機関銃：鋭い破裂音と金属音（連射用）
+        var nMg = LowNoise(0.22f);
+        MachineGun = FromSamples(Gen(0.14f, t =>
+        {
+            float env = MathF.Exp(-t * 34f);
+            float pop = MathF.Sin(Tau * (110 + 180 * MathF.Exp(-t * 45f)) * t) * 0.85f;
+            float crack = (t < 0.015f ? Noise() * 1.1f : 0) + nMg() * 1.6f;
+            return (pop + crack) * env;
+        }));
+
+        // 爆弾投下：カシャンという切り離し音＋ヒュルルルという落下風切り音
+        BombDrop = FromSamples(Gen(0.85f, t =>
+        {
+            float clunk = t < 0.08f ? MathF.Sin(Tau * 320 * t) * MathF.Exp(-t * 45f) * 0.6f : 0;
+            float f = 920 - 520 * (t / 0.85f);
+            ph1 += f / Rate;
+            float whistle = MathF.Sin(Tau * (float)ph1) * Math.Min(1f, t / 0.1f) * MathF.Exp(-t * 2.2f) * 0.45f;
+            return clunk + whistle;
+        }));
+        ph1 = 0;
 
         // 爆発：長い轟音とパチパチ
         var n2 = LowNoise(0.05f);
@@ -402,6 +423,19 @@ public static unsafe class Audio
                     float sq = ph1 < 0.3 ? 1 : -1;
                     lp1 += (sq - lp1) * 0.15f;
                     x += lp1 * 0.55f;
+                    break;
+                }
+                case VehicleKind.Fighter:
+                {
+                    // ジェットタービンの高音＋アフターバーナーの轟音
+                    float fTurbine = 520 + Math.Min(kmh, 2400) * 0.45f + Throttle * 260;
+                    ph1 = (ph1 + fTurbine / Rate) % 1;
+                    ph2 = (ph2 + fTurbine * 1.498 / Rate) % 1;
+                    float whine = (MathF.Sin(Tau * (float)ph1) + 0.5f * MathF.Sin(Tau * (float)ph2)) * 0.08f;
+                    lp1 += (Noise() - lp1) * (0.09f + Throttle * 0.08f);
+                    lp2 += (lp1 - lp2) * 0.025f;
+                    float roar = (lp1 * 0.7f + lp2 * 1.4f) * (0.45f + Throttle * 0.55f + Math.Min(0.5f, kmh / 1200f));
+                    x += whine + roar;
                     break;
                 }
                 default:

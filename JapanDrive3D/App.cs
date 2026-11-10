@@ -87,7 +87,8 @@ public sealed partial class App
                     {
                         "tank" => VehicleKind.Tank, "amph" => VehicleKind.Amphibious,
                         "horse" => VehicleKind.Horse, "hikyaku" => VehicleKind.Hikyaku,
-                        "heli" => VehicleKind.Helicopter, "plane" => VehicleKind.Airplane, _ => VehicleKind.Sports,
+                        "heli" => VehicleKind.Helicopter, "plane" => VehicleKind.Airplane,
+                        "fighter" => VehicleKind.Fighter, _ => VehicleKind.Sports,
                     };
                     break;
                 case "--at" when i + 1 < args.Length: app.demoAt = args[++i]; break;
@@ -103,6 +104,7 @@ public sealed partial class App
                     app.demoLatLon = (double.Parse(ll[0]), double.Parse(ll[1]));
                     break;
                 case "--bigmap": app.demoBigMap = true; break;
+                case "--mapzoom" when i + 1 < args.Length: app.bigMapZoom = float.Parse(args[++i]); app.centerMapOnPlayer = true; break;
                 case "--steer" when i + 1 < args.Length: app.demoSteer = float.Parse(args[++i]); break;
                 case "--heading" when i + 1 < args.Length: app.heading = float.Parse(args[++i]); break;
             }
@@ -534,7 +536,7 @@ public sealed partial class App
             }
             else
             {
-                float back = playerKind == VehicleKind.Airplane ? 20 : 17;
+                float back = playerKind == VehicleKind.Fighter ? 22 : playerKind == VehicleKind.Airplane ? 20 : 17;
                 pos = car - dir * back + new Vector3(0, 5.5f, 0);
                 // 高く飛ぶほど下の景色を見下ろす
                 float down = Math.Min(22, altitude / 150f);
@@ -640,6 +642,8 @@ public sealed partial class App
         if (Raylib.IsKeyPressed(KeyboardKey.V)) SwitchVehicle();
         if (Raylib.IsKeyPressed(KeyboardKey.B)) stampBook = true;
         if (Raylib.IsKeyPressed(KeyboardKey.M)) bigMap = !bigMap;
+        if (Raylib.IsKeyPressed(KeyboardKey.LeftBracket) || Raylib.IsKeyPressed(KeyboardKey.Comma)) CycleMiniMapZoom(-1);
+        if (Raylib.IsKeyPressed(KeyboardKey.RightBracket) || Raylib.IsKeyPressed(KeyboardKey.Period)) CycleMiniMapZoom(1);
         if (Raylib.IsKeyPressed(KeyboardKey.C)) cockpit = !cockpit;
         if (Raylib.IsKeyPressed(KeyboardKey.F)) game.Refuel();
         if (Raylib.IsKeyPressed(KeyboardKey.U)) game.UTurn();

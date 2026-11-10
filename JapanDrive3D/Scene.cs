@@ -409,7 +409,8 @@ public sealed class Scene
                 float scale = env == Env.Mountain ? 1.6f : 1f;
                 float r = (140 + Hash(id * 5) * 220) * scale;
                 float h = (60 + Hash(id * 5 + 1) * 150) * scale;
-                r = Math.Min(r, Math.Abs(u) - 60);   // 山すそが道路にかからないように
+                r = Math.Min(r, Math.Abs(u) - 135);   // カーブの先でも山すそが道路にかからないように
+                if (r < 30) continue;
                 float baseY = IsSea(env) ? SeaLevel(env) : -0.2f;
                 var p = P(s, u, baseY);
                 if (p.Z > 990) continue;
@@ -487,10 +488,11 @@ public sealed class Scene
         {
             if (!TunnelInChunk(k, out double start, out double len)) continue;
             double mid = start + len / 2;
-            var p = P(mid, 0, -0.5f);
+            // トンネル天井（7.2m）より上に山を描くことで、坑口付近の路面に山肌がめり込まないようにする
+            var p = P(mid, 0, 7.2f);
             if (p.Z - (float)len / 2 > ViewAhead || p.Z + (float)len / 2 < -ViewBehind) continue;
             var c = FogC(Rgb(62, 100, 55), Math.Max(10, Vector3.Distance(p, cam) - (float)len / 2));
-            Raylib.DrawCylinder(p, 0, (float)len / 2, 75 + (float)len * 0.05f, 16, c);
+            Raylib.DrawCylinder(p, 0, (float)len / 2 + 12, 70 + (float)len * 0.05f, 16, c);
         }
     }
 

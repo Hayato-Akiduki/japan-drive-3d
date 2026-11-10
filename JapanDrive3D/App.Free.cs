@@ -26,7 +26,7 @@ public sealed partial class App
     private float groundLevel;
     private bool stallWarned;
 
-    private static bool IsFlyer(VehicleKind k) => k is VehicleKind.Helicopter or VehicleKind.Airplane;
+    private static bool IsFlyer(VehicleKind k) => k is VehicleKind.Helicopter or VehicleKind.Airplane or VehicleKind.Fighter;
 
     // デモ用
     private float demoClimb;
@@ -67,12 +67,13 @@ public sealed partial class App
 
     private static float Accel(VehicleKind k) => k switch
     {
+        VehicleKind.Fighter => 120,
         VehicleKind.Sports => 60,
         VehicleKind.Tank => 24,
         VehicleKind.Amphibious => 28,
         VehicleKind.Horse => 32,
         VehicleKind.Hikyaku => 20,
-        _ => 40,
+        _ => 45,
     };
 
     private static double StrideOf(VehicleKind k) => k == VehicleKind.Horse ? 3.2 : 2.4;
@@ -125,7 +126,7 @@ public sealed partial class App
             freeKmh = Math.Clamp(freeKmh, -15, 30); // 水の中はゆっくり
 
         if (flyer && airborne)
-            heading += steer * (playerKind == VehicleKind.Helicopter ? 60 : 45) * dt;
+            heading += steer * (playerKind == VehicleKind.Helicopter ? 60 : playerKind == VehicleKind.Fighter ? 55 : 45) * dt;
         else if (!carAir)
         {
             float turn = 75f / (1 + Math.Abs(freeKmh) / 250f) * Math.Min(1, Math.Abs(freeKmh) / 8f);
@@ -146,12 +147,13 @@ public sealed partial class App
             float target = airborne ? -Math.Clamp(freeKmh / 25f, -8, 14) : 0;   // 前進中は機首を下げる
             pitch += Math.Clamp(target - pitch, -30 * dt, 30 * dt);
         }
-        else if (playerKind == VehicleKind.Airplane)
+        else if (playerKind is VehicleKind.Airplane or VehicleKind.Fighter)
         {
-            const float stallKmh = 140;
-            float target = climb ? 20 : descend ? -20 : 0;
+            float stallKmh = playerKind == VehicleKind.Fighter ? 150 : 140;
+            float maxPitch = playerKind == VehicleKind.Fighter ? 26 : 20;
+            float target = climb ? maxPitch : descend ? -maxPitch : 0;
             if (!airborne && (freeKmh < stallKmh || target < 0)) target = 0;   // 遅いと離陸できない
-            pitch += Math.Clamp(target - pitch, -40 * dt, 40 * dt);
+            pitch += Math.Clamp(target - pitch, -45 * dt, 45 * dt);
             vs = ms * MathF.Sin(pitch * MathF.PI / 180);
             if (airborne && freeKmh < stallKmh)
             {
@@ -301,14 +303,14 @@ public sealed partial class App
         }
         prevAirborne = flyer && altitude > 0.5f;
         crashedThisFrame = false;
-        float bankTarget = flyer && altitude > 0.5f ? steer * (playerKind == VehicleKind.Helicopter ? 12 : 35) : 0;
+        float bankTarget = flyer && altitude > 0.5f ? steer * (playerKind == VehicleKind.Helicopter ? 12 : playerKind == VehicleKind.Fighter ? 42 : 35) : 0;
         bank += (bankTarget - bank) * Math.Min(1, dt * 3);
-        rotor += dt * (playerKind == VehicleKind.Helicopter ? 1400 : playerKind == VehicleKind.Airplane ? 400 + Math.Abs(freeKmh) * 6 : 0);
+        rotor += dt * (playerKind == VehicleKind.Helicopter ? 1400 : playerKind is VehicleKind.Airplane or VehicleKind.Fighter ? 400 + Math.Abs(freeKmh) * 6 : 0);
         rotor %= 360000;
 
         // 高いところ（山の上・空）ほど遠くまで見えるようにする
-        scene.FogScale = 1 + Math.Max(0, freeY) / 120f;
-        f.ViewRadius = Math.Min(14000, 1000 * scene.FogScale);
+        scene.FogScale = 1 + Math.Max(0, freeY) / 110f;
+        f.ViewRadius = Math.Min(22000, 1200 * scene.FogScale);
         f.Altitude = altitude;
 
         if (water != freeOnWater)
@@ -343,6 +345,7 @@ public sealed partial class App
             }
         }
         shake = Math.Max(0, shake - dt);
+        blastFlash = Math.Max(0, blastFlash - dt * 3.8f);
 
         // 名所に近づいたらスタンプ
         foreach (var (spot, pos) in f.SpotPos)
@@ -382,12 +385,14 @@ public sealed partial class App
         game.AddLog($"{what} 機体は無事でした。↑と Space でもう一度飛べます。");
     }
 
-    /// <summary>建物を壊す（戦車の体当たり・砲撃）。</summary>
-    private void DestroyBlock(Block b)
+    /// <summary>建物を壊す（戦車の体当たり・砲撃・機関銃・爆撃）。</summary>
+    private void DestroyBlock(Block b, bool quiet = false)
     {
+        if (b.Destroyed) return;
         b.Destroyed = true;
-        for (int i = 0; i < 3; i++) AddFxW(FxKind.Fire, b.X, b.H * (0.2f + i * 0.3f), b.Z, Math.Min(3.5f, 1.2f + b.H / 40));
-        AddFxW(FxKind.Dust, b.X, 1, b.Z, 3);
+        int flames = quiet ? 1 : 3;
+        for (int i = 0; i < flames; i++) AddFxW(FxKind.Fire, b.X, b.H * (0.2f + i * 0.3f), b.Z, Math.Min(3.5f, 1.2f + b.H / 40), !quiet);
+        AddFxW(FxKind.Dust, b.X, 1, b.Z, 3, !quiet);
         shake = Math.Max(shake, 0.6f);
         destroyed++;
     }
@@ -398,6 +403,8 @@ public sealed partial class App
         if (Raylib.IsKeyPressed(KeyboardKey.C)) cockpit = !cockpit;
         if (Raylib.IsKeyPressed(KeyboardKey.B)) stampBook = true;
         if (Raylib.IsKeyPressed(KeyboardKey.M)) bigMap = !bigMap;
+        if (Raylib.IsKeyPressed(KeyboardKey.LeftBracket) || Raylib.IsKeyPressed(KeyboardKey.Comma)) CycleMiniMapZoom(-1);
+        if (Raylib.IsKeyPressed(KeyboardKey.RightBracket) || Raylib.IsKeyPressed(KeyboardKey.Period)) CycleMiniMapZoom(1);
         if (Raylib.IsKeyPressed(KeyboardKey.Escape))
         {
             if (bigMap) bigMap = false;
@@ -414,7 +421,7 @@ public sealed partial class App
         }
     }
 
-    // ---------------- 砲撃（フリーモード） ----------------
+    // ---------------- 砲撃・機関銃・爆撃（フリーモード） ----------------
 
     private void FireFree(float ms)
     {
@@ -424,6 +431,7 @@ public sealed partial class App
         const float speed = 230;
         shells.Add(new Shell
         {
+            Kind = ProjectileKind.Cannon,
             Free = true,
             WX = f.PX + dx * 7.6, WZ = f.PZ + dz * 7.6, Y = freeY + 2.05f,
             Vx = (float)(dx * speed + Math.Sin(hr) * ms), Vz = (float)(dz * speed + Math.Cos(hr) * ms), Vy = 3,
@@ -436,49 +444,294 @@ public sealed partial class App
         Audio.Play(Audio.Cannon, 0.9f);
     }
 
-    /// <summary>フリーモードの砲弾を進める。終わったら true。</summary>
+    private float HeliGunPitchDeg => altitude > 0.5f
+        ? pitch - Math.Clamp(altitude * 0.25f + 5f, 4f, 34f)
+        : 0.5f;
+
+    /// <summary>ヘリコプターの左右機関銃ポッドから交互に高速連射する。</summary>
+    private void FireHeliGun(float ms)
+    {
+        var f = free!;
+        gunSide = -gunSide;
+        double hr = heading * Math.PI / 180;
+        double aimHeading = (heading - turretYaw + (rng.NextDouble() - 0.5) * 1.4) * Math.PI / 180;
+        double aimPitch = (HeliGunPitchDeg + (rng.NextDouble() - 0.5) * 1.0) * Math.PI / 180;
+
+        // 機体の左右（±1.05m）、前方（+2.3m）の銃口位置
+        double fwdX = Math.Sin(hr), fwdZ = Math.Cos(hr);
+        double rightX = fwdZ, rightZ = -fwdX;
+        double mx = f.PX + fwdX * 2.3 + rightX * (gunSide * 1.05);
+        double mz = f.PZ + fwdZ * 2.3 + rightZ * (gunSide * 1.05);
+        float my = freeY + 1.18f;
+
+        const float speed = 390;
+        double cosP = Math.Cos(aimPitch), sinP = Math.Sin(aimPitch);
+        double dx = Math.Sin(aimHeading) * cosP, dz = Math.Cos(aimHeading) * cosP;
+        shells.Add(new Shell
+        {
+            Kind = ProjectileKind.Bullet,
+            Free = true,
+            WX = mx, WZ = mz, Y = my,
+            Vx = (float)(dx * speed + fwdX * ms),
+            Vz = (float)(dz * speed + fwdZ * ms),
+            Vy = (float)(sinP * speed),
+            Prev = f.R(mx, my, mz),
+        });
+        AddFxW(FxKind.Muzzle, mx, my, mz, 0.45f, playSound: false);
+        reload = 0.07f;
+        shake = Math.Max(shake, 0.08f);
+        Audio.Play(Audio.MachineGun, 0.65f, 0.95f + (float)rng.NextDouble() * 0.12f);
+    }
+
+    private Vector3 PredictHeliGunAim()
+    {
+        var f = free!;
+        double aimHeading = (heading - turretYaw) * Math.PI / 180;
+        double aimPitch = HeliGunPitchDeg * Math.PI / 180;
+        double cosP = Math.Cos(aimPitch), sinP = Math.Sin(aimPitch);
+        double dx = Math.Sin(aimHeading) * cosP, dz = Math.Cos(aimHeading) * cosP;
+        double tx = f.PX, tz = f.PZ;
+        float ty = freeY + 1.18f;
+        float vy = (float)(sinP * 390);
+        const float dtStep = 0.02f;
+        for (int i = 0; i < 30; i++)
+        {
+            tx += dx * 390 * dtStep;
+            tz += dz * 390 * dtStep;
+            vy -= 3.5f * dtStep;
+            ty += vy * dtStep;
+            float g = Math.Max(f.GroundY(tx, tz), f.RoofY(tx, tz));
+            if (ty <= g) { ty = g + 0.2f; break; }
+        }
+        return f.R(tx, ty, tz);
+    }
+
+    /// <summary>戦闘機の翼下から大型航空爆弾を前方へ投下する。</summary>
+    private void DropFighterBomb(float ms)
+    {
+        var f = free!;
+        gunSide = -gunSide;
+        double hr = heading * Math.PI / 180;
+        double fwdX = Math.Sin(hr), fwdZ = Math.Cos(hr);
+        double rightX = fwdZ, rightZ = -fwdX;
+        double bx = f.PX + fwdX * 2.5 + rightX * (gunSide * 2.1);
+        double bz = f.PZ + fwdZ * 2.5 + rightZ * (gunSide * 2.1);
+        float by = freeY + 0.9f;
+
+        // 画面前方の視界内で都市壊滅の大爆発・キノコ雲が一望できるよう、前方に大きく投射する
+        float fwdSpd = ms + 115f;
+        float pitchRad = pitch * MathF.PI / 180;
+        float vy0 = altitude < 6f ? 10f : Math.Min(-2f, ms * MathF.Sin(pitchRad) - 5f);
+        shells.Add(new Shell
+        {
+            Kind = ProjectileKind.Bomb,
+            Free = true,
+            WX = bx, WZ = bz, Y = by,
+            Vx = (float)(fwdX * fwdSpd),
+            Vz = (float)(fwdZ * fwdSpd),
+            Vy = vy0,
+            Prev = f.R(bx, by, bz),
+        });
+        reload = 1.15f;
+        Audio.Play(Audio.BombDrop, 0.85f);
+    }
+
+    /// <summary>戦闘機の現在位置・速度から爆弾の着弾地点を予測する。</summary>
+    private bool PredictBombImpact(out double ix, out float iy, out double iz)
+    {
+        var f = free!;
+        double hr = heading * Math.PI / 180;
+        float ms = freeKmh / 3.6f;
+        float fwdSpd = ms + 115f;
+        float pitchRad = pitch * MathF.PI / 180;
+        double vx = Math.Sin(hr) * fwdSpd, vz = Math.Cos(hr) * fwdSpd;
+        float vy = altitude < 6f ? 10f : Math.Min(-2f, ms * MathF.Sin(pitchRad) - 5f);
+
+        ix = f.PX + Math.Sin(hr) * 2.5;
+        iz = f.PZ + Math.Cos(hr) * 2.5;
+        iy = freeY + 0.9f;
+        const float step = 0.05f;
+        for (int i = 0; i < 180; i++)
+        {
+            ix += vx * step;
+            iz += vz * step;
+            vy -= 38f * step;
+            iy += vy * step;
+            if (i < 3 && altitude < 6f) continue;
+            float g = Math.Max(f.GroundY(ix, iz), f.RoofY(ix, iz));
+            if (iy <= g)
+            {
+                iy = g;
+                return true;
+            }
+        }
+        iy = f.GroundY(ix, iz);
+        return true;
+    }
+
+    /// <summary>爆弾の着弾：街をひとつ丸ごと吹き飛ばす超大型爆発（キノコ雲・衝撃波）。</summary>
+    private void BombExplode(double x, float y, double z)
+    {
+        var f = free!;
+        double camDist = Math.Sqrt((x - f.PX) * (x - f.PX) + (z - f.PZ) * (z - f.PZ));
+        bool onWater = !f.IsLand(x, z) && !f.OnRoad(x, z, 10);
+
+        // 中心部に超巨大爆発エフェクト（巨大火球・衝撃波リング・キノコ雲）を発生させる
+        AddFxW(FxKind.MegaBlast, x, onWater ? FreeWorld.SeaY : y + 1.0f, z, 1.0f, playSound: false);
+        Audio.PlayAt(Audio.Explosion, camDist * 0.25, 1.0f);
+        Audio.Play(Audio.Explosion, Math.Clamp(1.0f - (float)(camDist / 4500.0), 0.35f, 1.0f), 0.58f);
+
+        if (onWater)
+        {
+            AddFxW(FxKind.Splash, x, FreeWorld.SeaY, z, 14.0f, playSound: false);
+            for (int i = 0; i < 8; i++)
+            {
+                double a = i * Math.PI * 0.25;
+                AddFxW(FxKind.Splash, x + Math.Cos(a) * 90, FreeWorld.SeaY, z + Math.Sin(a) * 90, 7.5f, playSound: false);
+            }
+        }
+
+        // 半径1,350m（直径2.7km＝大都市丸ごと1つ分）以内の全ビルを一括破壊！
+        const double blastR = 1350.0;
+        int blocksDestroyedHere = 0;
+        string? mainCityDestroyed = null;
+        int maxCityHits = 0;
+        var newlyDestroyed = new List<Block>();
+
+        foreach (var place in f.Places)
+        {
+            double lim = place.Radius + blastR + 80;
+            if (Math.Abs(x - place.X) > lim || Math.Abs(z - place.Z) > lim) continue;
+            if (place.Blocks == null) _ = f.HitBlock(place.X, place.Z, y, 1); // 街区の建物を生成しておく
+            if (place.Blocks == null) continue;
+
+            int cityHits = 0;
+            foreach (var b in place.Blocks)
+            {
+                if (b.Destroyed) continue;
+                double dx = b.X - x, dz = b.Z - z;
+                if (dx * dx + dz * dz <= blastR * blastR)
+                {
+                    b.Destroyed = true;
+                    destroyed++;
+                    blocksDestroyedHere++;
+                    cityHits++;
+                    newlyDestroyed.Add(b);
+                }
+            }
+            if (cityHits > maxCityHits)
+            {
+                maxCityHits = cityHits;
+                mainCityDestroyed = place.Name;
+            }
+        }
+
+        // 破壊された街区の中から最大28箇所に二次火災・黒煙柱を立ち上らせる（負荷を抑えつつ大火災を表現）
+        if (newlyDestroyed.Count > 0)
+        {
+            int step = Math.Max(1, newlyDestroyed.Count / 28);
+            for (int i = 0; i < newlyDestroyed.Count; i += step)
+            {
+                var b = newlyDestroyed[i];
+                AddFxW(FxKind.Fire, b.X, 2.0f, b.Z, Math.Min(6.5f, 2.8f + b.H / 25f), playSound: false);
+            }
+        }
+        else if (!onWater)
+        {
+            for (int i = 0; i < 12; i++)
+            {
+                double a = i * Math.PI / 6.0;
+                double r = 60 + (i % 3) * 85;
+                AddFxW(FxKind.Fire, x + Math.Cos(a) * r, y + 1.5f, z + Math.Sin(a) * r, 4.5f, playSound: false);
+            }
+        }
+
+        // 半径1,500m以内の車両をすべて爆風で吹き飛ばす
+        foreach (var c in f.Cars)
+        {
+            if (c.Flying) continue;
+            double dx = c.X - x, dz = c.Z - z;
+            double d2 = dx * dx + dz * dz;
+            if (d2 <= 1500 * 1500)
+            {
+                double dist = Math.Max(1, Math.Sqrt(d2));
+                f.Knock(c, dx / dist, dz / dist, 2.6f);
+                AddFxW(FxKind.Fire, c.X, 1.2f, c.Z, 2.0f, playSound: false);
+                destroyed++;
+            }
+        }
+
+        if (blocksDestroyedHere >= 30 && mainCityDestroyed != null)
+            game.AddLog($"超大型爆弾が炸裂！ {mainCityDestroyed}の街（建物 {blocksDestroyedHere}棟）を壊滅させました！");
+        else if (blocksDestroyedHere > 0)
+            game.AddLog($"超大型爆弾が炸裂！ 建物 {blocksDestroyedHere}棟を一気に吹き飛ばしました！");
+
+        shake = Math.Max(shake, Math.Clamp(1.35f - (float)(camDist / 3500.0), 0.45f, 1.35f));
+        blastFlash = Math.Max(blastFlash, Math.Clamp(0.45f - (float)(camDist / 4000.0), 0.12f, 0.45f));
+    }
+
+    /// <summary>フリーモードの砲弾・機関銃弾・爆弾を進める。終わったら true。</summary>
     private bool UpdateFreeShell(Shell sh, float dt)
     {
         var f = free!;
         sh.Prev = f.R(sh.WX, sh.Y, sh.WZ);
-        for (int step = 0; step < 2; step++)
+        float grav = sh.Kind == ProjectileKind.Bomb ? 38f : sh.Kind == ProjectileKind.Bullet ? 3.5f : 9.8f;
+        float maxLife = sh.Kind == ProjectileKind.Bomb ? 12f : sh.Kind == ProjectileKind.Bullet ? 1.8f : 3.5f;
+        int steps = sh.Kind == ProjectileKind.Bullet ? 3 : 2;
+
+        for (int step = 0; step < steps; step++)
         {
-            float h = dt / 2;
+            float h = dt / steps;
             sh.WX += sh.Vx * h;
             sh.WZ += sh.Vz * h;
-            sh.Vy -= 9.8f * h;
+            sh.Vy -= grav * h;
             sh.Y += sh.Vy * h;
             sh.Life += h;
-            var hit = f.HitTest(sh.WX, sh.WZ, sh.Y, 1.5f);
+
+            if (sh.Kind == ProjectileKind.Bomb)
+            {
+                var bld = f.HitBlock(sh.WX, sh.WZ, sh.Y, 1.8f);
+                float g = f.GroundY(sh.WX, sh.WZ);
+                if (bld != null || sh.Y <= g)
+                {
+                    BombExplode(sh.WX, bld != null ? Math.Min(sh.Y, bld.H) : g, sh.WZ);
+                    return true;
+                }
+                if (sh.Life > maxLife) return true;
+                continue;
+            }
+
+            var hit = f.HitTest(sh.WX, sh.WZ, sh.Y, sh.Kind == ProjectileKind.Bullet ? 1.8f : 1.5f);
             if (hit != null)
             {
                 AddFxW(FxKind.Fire, hit.X, 1.2f, hit.Z, hit.Kind == VehicleKind.Truck ? 1.6f : 1.2f);
                 float v = MathF.Sqrt(sh.Vx * sh.Vx + sh.Vz * sh.Vz);
-                f.Knock(hit, sh.Vx / v, sh.Vz / v, 1);
+                f.Knock(hit, sh.Vx / v, sh.Vz / v, sh.Kind == ProjectileKind.Bullet ? 0.85f : 1);
                 destroyed++;
                 return true;
             }
-            var bld = f.HitBlock(sh.WX, sh.WZ, sh.Y, 0.3f);
-            if (bld != null)
+            var hitBld = f.HitBlock(sh.WX, sh.WZ, sh.Y, 0.3f);
+            if (hitBld != null)
             {
-                DestroyBlock(bld);
+                DestroyBlock(hitBld);
                 return true;
             }
-            float g = f.GroundY(sh.WX, sh.WZ);
-            if (sh.Y <= g)
+            float ground = f.GroundY(sh.WX, sh.WZ);
+            if (sh.Y <= ground)
             {
-                AddFxW(g < 0 ? FxKind.Splash : FxKind.Fire, sh.WX, g, sh.WZ, g < 0 ? 1.6f : 0.8f);
+                float sz = sh.Kind == ProjectileKind.Bullet ? (ground < 0 ? 0.7f : 0.45f) : (ground < 0 ? 1.6f : 0.8f);
+                AddFxW(ground < 0 ? FxKind.Splash : FxKind.Fire, sh.WX, ground, sh.WZ, sz);
                 return true;
             }
-            if (sh.Life > 3.5f) return true;
+            if (sh.Life > maxLife) return true;
         }
         return false;
     }
 
-    private void AddFxW(FxKind kind, double x, float y, double z, float size)
+    private void AddFxW(FxKind kind, double x, float y, double z, float size, bool playSound = true)
     {
         effects.Add(new Fx { Kind = kind, Free = true, WX = x, WZ = z, Y = y, Size = size, Seed = rng.Next(1000) });
-        if (free != null) FxSound(kind, Math.Sqrt((x - free.PX) * (x - free.PX) + (z - free.PZ) * (z - free.PZ)), size);
+        if (playSound && free != null) FxSound(kind, Math.Sqrt((x - free.PX) * (x - free.PX) + (z - free.PZ) * (z - free.PZ)), size);
     }
 
     // ---------------- 描画 ----------------
@@ -506,7 +759,8 @@ public sealed partial class App
         if (altitude < 400)
         {
             var g = f.R(f.PX, groundLevel + 0.08f, f.PZ);
-            float hw = playerKind == VehicleKind.Airplane ? 5f : 1.6f, hl = playerKind == VehicleKind.Airplane ? 4f : 4.5f;
+            float hw = playerKind is VehicleKind.Airplane or VehicleKind.Fighter ? 5f : 1.6f;
+            float hl = playerKind == VehicleKind.Fighter ? 5.2f : playerKind == VehicleKind.Airplane ? 4f : 4.5f;
             float hr = heading * MathF.PI / 180;
             var fw = new Vector3(-MathF.Sin(hr), 0, MathF.Cos(hr));
             var sd = new Vector3(fw.Z, 0, -fw.X);
@@ -559,6 +813,12 @@ public sealed partial class App
         int sw = Raylib.GetScreenWidth(), sh = Raylib.GetScreenHeight();
         float u = Ui;
 
+        if (blastFlash > 0.01f)
+        {
+            byte fa = (byte)Math.Clamp(blastFlash * 195f, 0, 210);
+            Raylib.DrawRectangle(0, 0, sw, sh, new Color((byte)255, (byte)238, (byte)185, fa));
+        }
+
         // 近くの都市名と名所名を3Dの上に表示
         var look = Vector3.Normalize(camera.Target - camera.Position);
         float labelRange = (float)Math.Max(1600, f.ViewRadius * 0.6);
@@ -597,6 +857,18 @@ public sealed partial class App
             Panel(sp.X - m.X / 2 - 8 * u, sp.Y - 4 * u, m.X + 16 * u, m.Y + 8 * u, got ? new Color(60, 60, 60, 160) : new Color(120, 30, 30, 190));
             Text(label, sp.X - m.X / 2, sp.Y, 15, got ? Rgb(200, 200, 200) : Rgb(255, 225, 130));
         }
+        // 近くの空港を3Dの上に表示
+        foreach (var ap in f.Airports)
+        {
+            var p = f.R(ap.X, 42, ap.Z);
+            float d = p.Length();
+            if (d > 2200 || Vector3.Dot(p - camera.Position, look) < 5) continue;
+            var sp = Raylib.GetWorldToScreen(p, camera);
+            string label = $"[空] {ap.Name}";
+            var m = Measure(label, 14);
+            Panel(sp.X - m.X / 2 - 7 * u, sp.Y - 3 * u, m.X + 14 * u, m.Y + 6 * u, new Color(15, 65, 95, 185));
+            Text(label, sp.X - m.X / 2, sp.Y, 14, Rgb(140, 235, 255));
+        }
 
         // 左上：状況
         var (near, nd) = f.NearestPlace(f.PX, f.PZ);
@@ -617,8 +889,12 @@ public sealed partial class App
         DrawLog(16 * u, sh - 150 * u, u);
         DrawCrosshair(u);
 
-        string help = IsFlyer(playerKind)
-            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降" + (playerKind == VehicleKind.Airplane ? "（140km/h 以上で離陸）" : "") + "　V 乗り物　M 地図・ワープ　B スタンプ帳　C 視点"
+        string help = playerKind == VehicleKind.Helicopter
+            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降　マウス・Z/X 照準　左クリック・Ctrl長押し 機関銃　V 乗り物　M 地図　B スタンプ帳　C 視点"
+            : playerKind == VehicleKind.Fighter
+            ? "↑↓ 加速/減速　←→ 旋回　Space 上昇（150km/h〜）　Shift 下降　左クリック・Ctrl 爆弾投下　V 乗り物　M 地図　B スタンプ帳　C 視点"
+            : IsFlyer(playerKind)
+            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降（140km/h 以上で離陸）　V 乗り物　M 地図・ワープ　B スタンプ帳　C 視点"
             : playerKind == VehicleKind.Tank
             ? "↑↓ 前進/後退（速度無制限）　←→ ハンドル　マウス・Z/X 砲塔　左クリック・Ctrl 発射　V 乗り物　M 地図・ワープ　B スタンプ帳　C 視点"
             : "↑↓ 前進/後退（速度無制限）　←→ ハンドル　V 乗り物切替　M 地図（クリックでワープ）　B スタンプ帳　C 視点　N タイトル";
@@ -669,25 +945,43 @@ public sealed partial class App
 
     private void HandleFreeMapMouse()
     {
-        bool left = Raylib.IsMouseButtonPressed(MouseButton.Left);
-        bool right = Raylib.IsMouseButtonPressed(MouseButton.Right);
-        if (!left && !right) return;
+        if (UpdateBigMapCamera(out bool clickedLeft, out bool clickedRight)) return;
+        if (!clickedLeft && !clickedRight) return;
         var (center, origin, scale) = BigMapView();
         var mouse = Raylib.GetMousePosition();
         var mp = new PointF(center.X + (mouse.X - origin.X) / scale, center.Y + (mouse.Y - origin.Y) / scale);
         var (wx, wz) = FreeWorld.FromMap(mp);
         var f = free!;
+
+        // 空港アイコンの近くをクリックした場合は滑走路の端へ正確に合わせる
+        float? snapHeading = null;
+        string? snapName = null;
+        foreach (var ap in f.Airports)
+        {
+            float dAp = Vector2.Distance(MapPt(FreeWorld.ToMap(ap.X, ap.Z), center, origin, scale), mouse);
+            if (dAp < 14 * Ui)
+            {
+                wx = ap.X - ap.Dx * 190;
+                wz = ap.Z - ap.Dz * 190;
+                snapHeading = ap.Heading;
+                snapName = ap.Name;
+                break;
+            }
+        }
+
         var (placeName, d) = f.NearestPlace(wx, wz);
-        string where = d < 3000 ? $"{placeName}付近" : "その地点";
-        if (left)
+        string where = snapName ?? (d < 4500 ? $"{placeName}付近" : "その地点");
+        if (clickedLeft)
         {
             BeginFade(() =>
             {
                 f.PX = wx;
                 f.PZ = wz;
+                if (snapHeading is float shdg) heading = shdg;
                 freeKmh = 0;
+                altitude = pitch = bank = 0;
                 freeY = groundLevel = f.SurfaceY(wx, wz);
-                carAir = false;
+                carAir = prevAirborne = false;
                 f.Cars.Clear();
                 f.UpdateNear();
                 bigMap = false;

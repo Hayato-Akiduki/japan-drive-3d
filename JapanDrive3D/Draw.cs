@@ -1,4 +1,4 @@
-﻿using System.Numerics;
+using System.Numerics;
 using System.Text;
 using Raylib_cs;
 
@@ -22,6 +22,7 @@ public static class Draw
         for (int c = 0x2600; c <= 0x2606; c++) chars.Add(c);   // ★ ☆
         chars.Add('※');
         chars.Add('〒');
+        chars.Add('橙');
         for (int c = 0x3000; c <= 0x30FF; c++) chars.Add(c);   // 記号・ひらがな・カタカナ
         for (int c = 0xFF01; c <= 0xFF9F; c++) chars.Add(c);   // 全角英数・半角カナ
 
@@ -43,6 +44,9 @@ public static class Draw
         foreach (var sp in Spots.All) foreach (char ch in sp.Name) chars.Add(ch);
         foreach (var t in GeoFeatures.Towns) foreach (char ch in t.Name) chars.Add(ch);
         foreach (var p in GeoFeatures.Peaks) foreach (char ch in p.Name) chars.Add(ch);
+        foreach (var ap in GeoFeatures.Airports) foreach (char ch in ap.Name) chars.Add(ch);
+        foreach (var lk in JapanOutline.AllLakes) foreach (char ch in lk.Name) chars.Add(ch);
+        foreach (var rv in JapanOutline.AllRivers) foreach (char ch in rv.Name) chars.Add(ch);
 
         string? path = null;
         foreach (var ttc in new[] { "YuGothB.ttc", "BIZ-UDGothicB.ttc", "meiryob.ttc", "msgothic.ttc" })
