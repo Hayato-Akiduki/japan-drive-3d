@@ -89,6 +89,10 @@ public sealed class Game
 
     /// <summary>車両ごとの最高速度（戦車は遅いなど）。</summary>
     public double SpeedCap { get; set; } = MaxSpeed;
+    /// <summary>加速倍率（MTモードのギア・回転数に応じたトルク特性）。</summary>
+    public double AccelFactor { get; set; } = 1;
+    /// <summary>アクセルオフ時の減速率（MTモードのエンジンブレーキ）。</summary>
+    public double EngineBrakeDecel { get; set; } = 3;
     /// <summary>水陸両用車に乗っている（フェリー航路を自力で渡る）。</summary>
     public bool Amphibious { get; set; }
     /// <summary>燃費の悪さ（1 = 普通の車）。</summary>
@@ -113,10 +117,12 @@ public sealed class Game
         }
         else
         {
-            if (Accel) Speed += 30 * dt;
+            if (Accel && Speed < SpeedCap) Speed += 30 * AccelFactor * dt;
             else if (Brake) Speed -= 80 * dt;
-            else Speed -= 3 * dt;
-            Speed = Math.Clamp(Speed, 0, Math.Min(MaxSpeed, SpeedCap));
+            else if (Speed > SpeedCap + 0.5) Speed = Math.Max(SpeedCap, Speed - Math.Max(42, EngineBrakeDecel) * dt);
+            else Speed -= EngineBrakeDecel * dt;
+            Speed = Math.Clamp(Speed, 0, Math.Max(Speed, Math.Min(MaxSpeed, SpeedCap)));
+            if (Speed <= SpeedCap + 0.5) Speed = Math.Clamp(Speed, 0, Math.Min(MaxSpeed, SpeedCap));
         }
 
         GameMinutes += gameDt;
@@ -363,9 +369,11 @@ public sealed class Game
     public static double TurnAngle(City city, Road? incoming, Road outgoing)
     {
         if (incoming == null) return 0;
-        var prev = ToWorld(incoming.Other(city));
+        var prevPt = incoming.NextPointFrom(city);
+        var nextPt = outgoing.NextPointFrom(city);
+        var prev = ToWorld(prevPt.Lat, prevPt.Lon);
         var here = ToWorld(city);
-        var next = ToWorld(outgoing.Other(city));
+        var next = ToWorld(nextPt.Lat, nextPt.Lon);
         double a1 = Math.Atan2(here.Y - prev.Y, here.X - prev.X);
         double a2 = Math.Atan2(next.Y - here.Y, next.X - here.X);
         double d = (a2 - a1) * 180 / Math.PI;
@@ -431,10 +439,10 @@ public sealed class Game
         get
         {
             if (Road == null) return ToWorld(From);
-            var a = ToWorld(From);
-            var b = ToWorld(To);
-            float t = (float)Math.Clamp(Traveled / Road.Km, 0, 1);
-            return new PointF(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
+            double t = Math.Clamp(Traveled / Road.Km, 0, 1);
+            if (From != Road.A) t = 1.0 - t;
+            var (lat, lon) = Road.Sample(t);
+            return ToWorld(lat, lon);
         }
     }
 

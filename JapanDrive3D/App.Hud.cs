@@ -34,12 +34,12 @@ public sealed partial class App
         DrawCrosshair(u);
 
         string help = detour != null
-            ? "↑↓ アクセル/ブレーキ　←→ ハンドル　Enter 高速に戻る　B スタンプ帳　C 視点"
+            ? "↑↓ アクセル/ブレーキ　←→ ハンドル　H AT/MT(Q/E・Shift ギア)　Enter 高速に戻る　B スタンプ帳　C 視点"
             : playerKind == VehicleKind.Tank
-                ? "↑↓ 走る/止まる　←→ 車線　マウス・Z/X 砲塔　左クリック・Ctrl 発射　V 車両切替　C 砲手視点　Q/E 次の分岐　P 寄り道　M 地図"
+                ? "↑↓ 走る/止まる　←→ 車線　H AT/MT(Shift・ホイール ギア)　マウス・Z/X 砲塔　左クリック・Ctrl 発射　V 車両　Q/E 次の分岐　M 地図"
                 : playerKind == VehicleKind.Amphibious
-                    ? "↑↓ 走る/止まる　←→ 車線（橋の左端から海へダイブ）　V 車両切替　Q/E 次の分岐　P 寄り道　B スタンプ帳　M 地図　C 視点"
-                    : "↑↓ アクセル/ブレーキ　←→ 車線　Q/E・1-9 次の分岐　T おまかせ　P 寄り道　V 車両切替　B スタンプ帳　M 地図　C 視点　F 給油";
+                    ? "↑↓ 走る/止まる　←→ 車線（橋の左端から海へダイブ）　H AT/MT(Shift/Ctrl ギア)　V 車両　Q/E 次の分岐　P 寄り道　M 地図"
+                    : "↑↓ アクセル/ブレーキ　←→ 車線　H AT/MT切替(Shift/Ctrl・ホイール ギア)　Q/E・1-9 次の分岐　T おまかせ　P 寄り道　V 車両　M 地図　F 給油";
         var hm = Measure(help, 13);
         Text(help, (sw - hm.X) / 2, sh - 24 * u, 13, new Color(255, 255, 255, 170));
 
@@ -325,25 +325,88 @@ public sealed partial class App
     private void DrawSpeedometer(float cx, float cy, float u)
     {
         var center = new Vector2(cx, cy);
-        float r = 130 * u;
-        Raylib.DrawCircleV(center, r + 10 * u, new Color(15, 20, 30, 200));
+        float r = 132 * u;
+        Raylib.DrawCircleV(center, r + 10 * u, new Color(15, 20, 30, 210));
         const float a0 = 135, a1 = 405;
-        Raylib.DrawRing(center, r - 14 * u, r, a0, a1, 48, new Color(70, 75, 90, 255));
+        Raylib.DrawRing(center, r - 12 * u, r, a0, a1, 48, new Color(70, 75, 90, 255));
         float kmh = CurrentKmh;
         float limit = freeRoam ? float.MaxValue : detour != null ? 60 : (float)Game.LegalSpeed;
         float gaugeMax = freeRoam ? Math.Max(200f, MathF.Ceiling(Math.Abs(kmh) / 100f + 0.3f) * 100) : (float)Game.MaxSpeed;
-        float t = Math.Abs(kmh) / gaugeMax;
+        float t = Math.Clamp(Math.Abs(kmh) / gaugeMax, 0f, 1f);
         Color c = kmh > limit + 20 ? Rgb(255, 80, 60) : kmh > limit ? Rgb(255, 210, 60) : Rgb(80, 200, 255);
-        if (t > 0.002f) Raylib.DrawRing(center, r - 14 * u, r, a0, a0 + (a1 - a0) * t, 48, c);
+        if (t > 0.002f) Raylib.DrawRing(center, r - 12 * u, r, a0, a0 + (a1 - a0) * t, 48, c);
         // 制限速度の目盛り
         float la = (a0 + (a1 - a0) * Math.Min(1, limit / gaugeMax)) * MathF.PI / 180;
-        if (!freeRoam) Raylib.DrawLineEx(center + new Vector2(MathF.Cos(la), MathF.Sin(la)) * (r - 20 * u),
+        if (!freeRoam) Raylib.DrawLineEx(center + new Vector2(MathF.Cos(la), MathF.Sin(la)) * (r - 16 * u),
             center + new Vector2(MathF.Cos(la), MathF.Sin(la)) * (r + 4 * u), 3 * u, Color.White);
 
-        string sp = $"{kmh:0}";
-        var m = Measure(sp, 56);
-        Text(sp, cx - m.X / 2, cy - 52 * u, 56, game.OnFerry ? Rgb(120, 170, 255) : Color.White);
-        TextCentered(game.OnFerry ? "フェリー航行中" : pstate == PlayerState.Water ? "km/h（海上）" : "km/h", cx, cy + 8 * u, 15, Sub);
+        bool hasGearbox = IsGearboxVehicle && !game.OnFerry;
+        if (hasGearbox)
+        {
+            // 内側リング：タコメーター（エンジン回転計 0〜9,000 rpm、7,500 rpm〜レッドゾーン）
+            float trIn = r - 27 * u, trOut = r - 16 * u;
+            float redStart = a0 + (a1 - a0) * (7500f / 9000f);
+            Raylib.DrawRing(center, trIn, trOut, a0, redStart, 40, new Color(45, 50, 65, 255));
+            Raylib.DrawRing(center, trIn, trOut, redStart, a1, 16, new Color(135, 35, 40, 230));
+
+            float rpmT = Math.Clamp(engineRpm / 9000f, 0f, 1f);
+            bool redZone = engineRpm >= 7400f;
+            Color rpmCol = redZone
+                ? (revLimiting && (int)(time * 18f) % 2 == 0 ? Color.White : Rgb(255, 65, 55))
+                : engineRpm >= 3800f ? Rgb(255, 185, 45) : Rgb(95, 230, 145);
+            if (rpmT > 0.005f)
+                Raylib.DrawRing(center, trIn, trOut, a0, a0 + (a1 - a0) * rpmT, 40, rpmCol);
+
+            // 1,000 rpm ごとの目盛り
+            for (int k = 1; k <= 8; k++)
+            {
+                float ang = (a0 + (a1 - a0) * (k / 9f)) * MathF.PI / 180f;
+                var dir = new Vector2(MathF.Cos(ang), MathF.Sin(ang));
+                Raylib.DrawLineEx(center + dir * (trIn - 2 * u), center + dir * (trOut + 1 * u), 1.5f * u,
+                    k >= 8 ? Rgb(255, 110, 110) : new Color(180, 190, 210, 160));
+            }
+
+            // ギアインジケーター（AT D1〜D6 / MT R・N・1速〜6速）
+            int g = ActiveGear;
+            string gText = $"{(manualTransmission ? "MT" : "AT")} {GearLabel(g, manualTransmission)}";
+            float bw = 92 * u, bh = 25 * u;
+            var badgeRect = new Rectangle(cx - bw / 2, cy - 86 * u, bw, bh);
+            Color badgeBg = manualTransmission
+                ? (redZone ? new Color(170, 30, 30, 235) : new Color(55, 32, 15, 230))
+                : new Color(25, 40, 62, 220);
+            Color badgeBorder = shiftAnim > 0.05f ? Color.White : manualTransmission ? Orange : Rgb(95, 175, 240);
+            Raylib.DrawRectangleRounded(badgeRect, 0.3f, 6, badgeBg);
+            Raylib.DrawRectangleRoundedLinesEx(badgeRect, 0.3f, 6, 1.8f * u, badgeBorder);
+            TextCentered(gText, cx, cy - 82 * u, 16, manualTransmission ? Rgb(255, 225, 130) : Rgb(180, 225, 255));
+
+            // シフトアップ警告（MTでレッドゾーン到達時）またはドリフト表示
+            if (isDrifting)
+            {
+                var dRect = new Rectangle(cx - 48 * u, cy - 115 * u, 96 * u, 22 * u);
+                Raylib.DrawRectangleRounded(dRect, 0.3f, 6, new Color(210, 85, 15, 235));
+                TextCentered("DRIFT!", cx, cy - 112 * u, 14, Color.White);
+            }
+            else if (manualTransmission && (revLimiting || engineRpm >= 7400f) && g is >= 1 and < 6)
+            {
+                bool blink = (int)(time * 12f) % 2 == 0;
+                var sRect = new Rectangle(cx - 54 * u, cy - 115 * u, 108 * u, 22 * u);
+                Raylib.DrawRectangleRounded(sRect, 0.3f, 6, blink ? Rgb(235, 40, 40) : new Color(110, 20, 20, 220));
+                TextCentered("SHIFT UP!", cx, cy - 112 * u, 14, Color.White);
+            }
+        }
+
+        string sp = $"{Math.Abs(kmh):0}";
+        var m = Measure(sp, 50);
+        Text(sp, cx - m.X / 2, cy - 55 * u, 50, game.OnFerry ? Rgb(120, 170, 255) : kmh < -0.5f ? Rgb(255, 180, 120) : Color.White);
+        TextCentered(game.OnFerry ? "フェリー航行中" : pstate == PlayerState.Water ? "km/h（海上）" : "km/h", cx, cy - 3 * u, 14, Sub);
+
+        if (hasGearbox)
+        {
+            Color rpmTxtCol = engineRpm >= 7400f ? Rgb(255, 95, 85) : engineRpm >= 3800f ? Rgb(255, 210, 110) : Rgb(185, 205, 220);
+            TextCentered($"{engineRpm:N0} rpm", cx, cy + 16 * u, 14, rpmTxtCol);
+            TextCentered("H: AT/MT　E/Q: 変速", cx, cy + 92 * u, 11, new Color(200, 210, 225, 175));
+        }
+
         TextCentered(VehicleName(playerKind), cx, cy + 74 * u, 14, Rgb(255, 220, 150));
         if (freeRoam && IsFlyer(playerKind))
             TextCentered($"高度 {altitude:N0} m", cx, cy + 40 * u, 20, altitude > 0.5f ? Rgb(140, 220, 255) : Sub);
@@ -351,11 +414,11 @@ public sealed partial class App
         if (!freeRoam)
         {
             float ratio = (float)(game.Fuel / Game.TankSize);
-            var bar = new Rectangle(cx - 70 * u, cy + 40 * u, 140 * u, 10 * u);
+            var bar = new Rectangle(cx - 70 * u, cy + 38 * u, 140 * u, 9 * u);
             Raylib.DrawRectangleRec(bar, Rgb(60, 60, 70));
             Color fc = ratio > 0.5f ? Rgb(90, 220, 90) : ratio > 0.2f ? Rgb(255, 170, 40) : Rgb(255, 60, 60);
             Raylib.DrawRectangleRec(new Rectangle(bar.X, bar.Y, bar.Width * ratio, bar.Height), fc);
-            TextCentered($"燃料 {game.Fuel:0.0}L", cx, cy + 54 * u, 13, Sub);
+            TextCentered($"燃料 {game.Fuel:0.0}L", cx, cy + 52 * u, 13, Sub);
         }
     }
 
@@ -533,23 +596,36 @@ public sealed partial class App
 
         // 6) ナビ経路
         var path = game.NavPath();
-        if (path != null)
+        if (path != null && path.Count > 0)
         {
             var prev = to(CarMapPos);
-            foreach (var c in path)
+            var firstP = to(Game.ToWorld(path[0]));
+            Raylib.DrawLineEx(prev, firstP, 6 * u, new Color(255, 140, 0, 200));
+            for (int idx = 0; idx + 1 < path.Count; idx++)
             {
-                var p = to(Game.ToWorld(c));
-                Raylib.DrawLineEx(prev, p, 6 * u, new Color(255, 140, 0, 200));
-                prev = p;
+                var c0 = path[idx];
+                var c1 = path[idx + 1];
+                var navRoad = c0.Roads.Where(x => x.Other(c0) == c1).MinBy(x => x.Km);
+                if (navRoad != null && navRoad.Points.Length > 2)
+                {
+                    for (int k = 0; k + 1 < navRoad.Points.Length; k++)
+                    {
+                        var pa = to(Game.ToWorld(navRoad.Points[k].Lat, navRoad.Points[k].Lon));
+                        var pb = to(Game.ToWorld(navRoad.Points[k + 1].Lat, navRoad.Points[k + 1].Lon));
+                        Raylib.DrawLineEx(pa, pb, 6 * u, new Color(255, 140, 0, 200));
+                    }
+                }
+                else
+                {
+                    Raylib.DrawLineEx(to(Game.ToWorld(c0)), to(Game.ToWorld(c1)), 6 * u, new Color(255, 140, 0, 200));
+                }
             }
         }
 
-        // 7) 高速道路・海上橋・フェリー航路（ライン描画）
+        // 7) 高速道路・海上橋・フェリー航路（折れ線描画）
+        float roadW = (effZoom > 2.0f ? 3.2f : 2.5f) * u;
         foreach (var r in MapData.Roads)
         {
-            var pa = to(Game.ToWorld(r.A));
-            var pb = to(Game.ToWorld(r.B));
-            if (!InView(pa, 60) && !InView(pb, 60)) continue;
             var col = r.Type switch
             {
                 RoadType.Ferry => Rgb(90, 155, 255),
@@ -557,11 +633,25 @@ public sealed partial class App
                 RoadType.MegaBridge => Rgb(255, 175, 65),
                 _ => Rgb(70, 195, 110),
             };
-            float roadW = (effZoom > 2.0f ? 3.2f : 2.5f) * u;
-            Raylib.DrawLineEx(pa, pb, roadW, col);
+            var pts = r.Points;
+            for (int k = 0; k + 1 < pts.Length; k++)
+            {
+                var pa = to(Game.ToWorld(pts[k].Lat, pts[k].Lon));
+                var pb = to(Game.ToWorld(pts[k + 1].Lat, pts[k + 1].Lon));
+                if (!InView(pa, 60) && !InView(pb, 60)) continue;
+                Raylib.DrawLineEx(pa, pb, roadW, col);
+            }
         }
         if (game.Road != null)
-            Raylib.DrawLineEx(to(Game.ToWorld(game.From)), to(Game.ToWorld(game.To)), 4.0f * u, Rgb(255, 75, 75));
+        {
+            var pts = game.Road.Points;
+            for (int k = 0; k + 1 < pts.Length; k++)
+            {
+                var pa = to(Game.ToWorld(pts[k].Lat, pts[k].Lon));
+                var pb = to(Game.ToWorld(pts[k + 1].Lat, pts[k + 1].Lon));
+                Raylib.DrawLineEx(pa, pb, 4.0f * u, Rgb(255, 75, 75));
+            }
+        }
 
         // 8) 地方都市・町マーカー（拡大時に段階表示）
         if (effZoom > 1.55f)
@@ -614,7 +704,7 @@ public sealed partial class App
         }
 
         // 11) 主要都市マーカー＆最優先ラベル
-        static bool IsKeyOverseas(string name) => name is "豊原" or "オハ" or "ソウル" or "釜山" or "済州" or "台北" or "高雄";
+        static bool IsKeyOverseas(string name) => name is "豊原" or "オハ" or "カムチャツカ" or "ウラジオストク" or "ハバロフスク" or "ソウル" or "釜山" or "済州" or "平壌" or "瀋陽" or "大連" or "北京" or "青島" or "上海" or "福州" or "アモイ" or "香港" or "台北" or "高雄" or "マニラ" or "小笠原";
         foreach (var c in MapData.Cities.OrderByDescending(c => c.IsGoal || c == game.StartCity || c == game.NavTarget ? 2 : IsKeyOverseas(c.Name) ? 1 : 0))
         {
             var p = to(Game.ToWorld(c));
@@ -628,11 +718,11 @@ public sealed partial class App
             Raylib.DrawCircleV(p, (goal ? 5.8f : overseasHub ? 4.8f : 3.8f) * u, fill);
             if (c == game.NavTarget) Raylib.DrawCircleLines((int)p.X, (int)p.Y, 10 * u, Rgb(255, 90, 40));
 
-            if (labels || goal || overseasHub)
+            if ((labels && effZoom >= 0.85f) || goal || overseasHub)
             {
                 string text = (goal && c != game.StartCity ? "★" : "") + c.Name;
                 float fSize = labels ? (goal ? 14.5f : overseasHub ? 13.8f : 13f) : 12f;
-                bool force = (goal || overseasHub || c == game.StartCity || c == game.NavTarget) && effZoom >= 1.5f;
+                bool force = (goal || overseasHub || c == game.StartCity || c == game.NavTarget) && effZoom >= 1.4f;
                 TryDrawLabel(text, p.X + 6 * u, p.Y - 9 * u, fSize, goal ? Rgb(255, 240, 150) : overseasHub ? Rgb(255, 215, 175) : Color.White, force);
             }
         }
@@ -668,7 +758,7 @@ public sealed partial class App
 
             foreach (var (pName, lat, lon, elev) in GeoFeatures.Peaks)
             {
-                bool majorPeak = elev >= 2400 || pName is "富士山" or "旭岳" or "岩手山" or "鳥海山" or "大山" or "石鎚山" or "阿蘇山" or "桜島" or "宮之浦岳";
+                bool majorPeak = elev >= 2400 || pName is "富士山" or "旭岳" or "岩手山" or "鳥海山" or "大山" or "石鎚山" or "阿蘇山" or "桜島" or "宮之浦岳" or "白頭山（長白山）" or "泰山" or "黄山" or "マヨン山";
                 if (!(effZoom > 2.3f || (effZoom > 1.35f && majorPeak))) continue;
                 var p = to(Game.ToWorld(lat, lon));
                 if (!InView(p, 30)) continue;
@@ -706,7 +796,8 @@ public sealed partial class App
                     var pa = to(Game.ToWorld(r.A));
                     var pb = to(Game.ToWorld(r.B));
                     if (Vector2.Distance(pa, pb) <= 75 * u) continue;
-                    var mid = (pa + pb) * 0.5f;
+                    var midLatLon = r.Sample(0.5);
+                    var mid = to(Game.ToWorld(midLatLon.Lat, midLatLon.Lon));
                     if (!InView(mid, 10)) continue;
                     string rText = effZoom > 3.8f ? $"{r.Name} ({r.Km:0}km)" : r.Name;
                     var rm = Measure(rText, 11f);
@@ -782,7 +873,7 @@ public sealed partial class App
         if (Math.Abs(wheel) > 0.001f)
         {
             var worldUnderMouse = new Vector2(center.X + (mouse.X - origin.X) / scale, center.Y + (mouse.Y - origin.Y) / scale);
-            bigMapZoom = Math.Clamp(bigMapZoom * MathF.Pow(1.22f, wheel), 1.0f, 16.0f);
+            bigMapZoom = Math.Clamp(bigMapZoom * MathF.Pow(1.22f, wheel), 0.8f, 28.0f);
             float newScale = baseScale * bigMapZoom;
             var newCenter = worldUnderMouse - new Vector2((mouse.X - origin.X) / newScale, (mouse.Y - origin.Y) / newScale);
             bigMapPan = newCenter - baseCenter;
@@ -837,8 +928,8 @@ public sealed partial class App
             if (Raylib.IsMouseButtonReleased(MouseButton.Left)) clickedLeft = true;
             if (Raylib.IsMouseButtonReleased(MouseButton.Right)) clickedRight = true;
         }
-        bigMapPan.X = Math.Clamp(bigMapPan.X, -24f, 24f);
-        bigMapPan.Y = Math.Clamp(bigMapPan.Y, -24f, 24f);
+        bigMapPan.X = Math.Clamp(bigMapPan.X, -48f, 48f);
+        bigMapPan.Y = Math.Clamp(bigMapPan.Y, -48f, 48f);
         return bigMapMoved;
     }
 

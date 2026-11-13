@@ -16,14 +16,14 @@ public static unsafe class Audio
     public static bool BgmOn { get; set; } = true;
     public static bool SfxOn { get; set; } = true;
 
-    public static Sound Cannon, MachineGun, BombDrop, Explosion, Splash, Stamp, Crash, Thud, Beep, Etc, Neigh, Siren, Fanfare, Whoosh, Select;
+    public static Sound Cannon, MachineGun, BombDrop, Explosion, Splash, Stamp, Crash, Thud, Beep, Etc, Neigh, Siren, Fanfare, Whoosh, Select, Shift;
     private static Sound[] bgm = Array.Empty<Sound>();
     private static int bgmTrack = -1;
 
     // ---- 連続音（エンジンなど）の状態：毎フレーム App から設定する ----
     public static VehicleKind Kind;
-    public static float Kmh, Throttle, Altitude;
-    public static bool OnWater, Active;
+    public static float Kmh, Throttle, Altitude, Rpm;
+    public static bool OnWater, Active, RevLimiting, Drifting;
 
     private static AudioStream stream;
     private static short* buf;
@@ -234,6 +234,17 @@ public static unsafe class Audio
         // 決定音
         Select = FromSamples(Gen(0.18f, t =>
             MathF.Sin(Tau * (t < 0.07f ? 880 : 1320) * t) * 0.5f * Math.Min(1, (0.18f - t) * 30)));
+
+        // ギアチェンジ音：シフトレバーのコクッという金属音＋ブローオフのシュッという排気音
+        var nShift = LowNoise(0.28f);
+        Shift = FromSamples(Gen(0.22f, t =>
+        {
+            float click1 = t < 0.035f ? MathF.Sin(Tau * 420 * t) * MathF.Exp(-t * 85f) * 0.75f : 0;
+            float t2 = t - 0.045f;
+            float click2 = t2 >= 0 && t2 < 0.05f ? MathF.Sin(Tau * 640 * t2) * MathF.Exp(-t2 * 70f) * 0.85f : 0;
+            float blow = (Noise() - nShift()) * MathF.Exp(-t * 16f) * 0.45f;
+            return click1 + click2 + blow;
+        }));
     }
 
     // ================= BGM =================
@@ -440,19 +451,35 @@ public static unsafe class Audio
                 }
                 default:
                 {
-                    // ガソリン車：ギアに合わせて回転数が上下する
-                    float gearW = 45;
-                    int gear = (int)Math.Min(5, kmh / gearW);
-                    float within = (kmh - gear * gearW) / gearW;
-                    float rpm = 900 + Math.Clamp(within, 0, 1) * 4300 + Throttle * 300;
-                    if (kmh > gearW * 6) rpm = Math.Min(9500, 5200 + (kmh - gearW * 6) * 4);
+                    // ガソリン車：ギアに合わせて回転数が上下する（MT/AT共通で App 側の実回転数 Rpm を反映）
+                    float rpm;
+                    if (Rpm > 100f)
+                    {
+                        rpm = Rpm;
+                    }
+                    else
+                    {
+                        float gearW = 45;
+                        int gear = (int)Math.Min(5, kmh / gearW);
+                        float within = (kmh - gear * gearW) / gearW;
+                        rpm = 900 + Math.Clamp(within, 0, 1) * 4300 + Throttle * 300;
+                        if (kmh > gearW * 6) rpm = Math.Min(9500, 5200 + (kmh - gearW * 6) * 4);
+                    }
+                    // レブリミッター作動時は点火カットのババババッという脈動を入れる
+                    float revCut = RevLimiting && ((i >> 9) & 1) == 0 ? 0.25f : 1.0f;
                     float f0 = rpm / 30;
                     ph1 = (ph1 + f0 / Rate) % 1;
                     ph2 = (ph2 + f0 * 0.5 / Rate) % 1;
                     float saw = (float)ph1 * 2 - 1;
                     float sub = ph2 < 0.5 ? 1 : -1;
-                    lp1 += (saw * 0.7f + sub * 0.3f - lp1) * (0.08f + Throttle * 0.08f);
-                    x += lp1 * (0.45f + Throttle * 0.35f);
+                    lp1 += (saw * 0.7f + sub * 0.3f - lp1) * (0.08f + Throttle * 0.08f + Math.Min(0.08f, rpm / 90000f));
+                    x += lp1 * (0.45f + Throttle * 0.35f) * revCut;
+                    if (Drifting && kmh > 15f)
+                    {
+                        // ドリフト・サイドブレーキ時のスキール音（キュルルル）
+                        ph3 = (ph3 + (1450 + MathF.Sin((float)ph1 * Tau) * 95) / Rate) % 1;
+                        x += (MathF.Sin(Tau * (float)ph3) * 0.22f + Noise() * 0.14f) * Math.Min(1f, kmh / 60f);
+                    }
                     break;
                 }
             }

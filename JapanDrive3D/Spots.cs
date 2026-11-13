@@ -38,6 +38,7 @@ public static class Spots
         S("八戸", "蕪島神社", LandmarkType.Torii);
         S("秋田", "入道埼灯台", LandmarkType.Lighthouse);
         S("盛岡", "岩手山", LandmarkType.Mountain);
+        S("宮古", "浄土ヶ浜・魹ヶ崎灯台", LandmarkType.Lighthouse);
         S("酒田", "鳥海山", LandmarkType.Mountain);
         S("仙台", "伊達政宗騎馬像", LandmarkType.Monument);
         S("山形", "山寺（立石寺）", LandmarkType.Temple);
@@ -62,6 +63,8 @@ public static class Spots
         S("木更津", "海ほたるPA", LandmarkType.Bridge, 2);
         S("館山", "野島埼灯台", LandmarkType.Lighthouse);
         S("下田", "爪木崎灯台", LandmarkType.Lighthouse);
+        S("八丈島", "八丈富士・南原千畳敷", LandmarkType.Volcano, 1);
+        S("小笠原", "父島・南島ラピエ", LandmarkType.Lake);
         // 北陸・東海
         S("輪島", "白米千枚田", LandmarkType.Garden);
         S("富山", "立山連峰", LandmarkType.Mountain);
@@ -128,13 +131,23 @@ public static class Spots
         S("那覇", "首里城", LandmarkType.Castle, 2);
         S("宮古島", "東平安名崎灯台", LandmarkType.Lighthouse);
         S("石垣", "川平湾", LandmarkType.Lake);
+        S("与那国", "西崎（日本最西端の碑）", LandmarkType.Lighthouse, 1);
         // 樺太（サハリン）
         S("大泊", "中知床岬（アニワ灯台）", LandmarkType.Lighthouse, 1);
         S("豊原", "旧樺太庁博物館", LandmarkType.ClockTower, 1);
         S("真岡", "真岡港・九人の乙女碑", LandmarkType.Monument);
+        S("知取", "突阻山・東海岸灯台", LandmarkType.Mountain);
+        S("恵須取", "恵須取炭鉱・間宮海峡展望台", LandmarkType.Monument, 1);
         S("敷香", "多来加湾・ツンドラ湿原", LandmarkType.Lake, 1);
         S("オハ", "北樺太油田記念塔", LandmarkType.Tower, 2);
-        // 韓国（対馬・朝鮮半島・済州島）
+        // 千島列島・カムチャツカ・極東ロシア
+        S("国後", "爺爺岳", LandmarkType.Volcano);
+        S("択捉", "単冠湾・散布山", LandmarkType.Volcano, 1);
+        S("幌筵", "阿頼度山（親子場山）", LandmarkType.Volcano);
+        S("カムチャツカ", "アヴァチャ山・ペトロパブロフスク港", LandmarkType.Volcano);
+        S("ウラジオストク", "ルースキー島大橋・金角湾", LandmarkType.Bridge, 2);
+        S("ハバロフスク", "アムール川鉄橋・ウスペンスキー聖堂", LandmarkType.Bridge, 1);
+        // 韓国・北朝鮮（対馬・朝鮮半島・済州島）
         S("対馬", "万関橋・和多都美神社", LandmarkType.Bridge, 1);
         S("釜山", "広安大橋・海雲台", LandmarkType.Bridge, 2);
         S("済州", "漢拏山", LandmarkType.Volcano);
@@ -145,7 +158,18 @@ public static class Spots
         S("ソウル", "Nソウルタワー", LandmarkType.Tower, 3);
         S("ソウル", "景福宮 勤政殿", LandmarkType.Castle, 2);
         S("仁川", "仁川大橋", LandmarkType.Bridge, 2);
-        // 台湾
+        S("平壌", "主体思想塔・凱旋門", LandmarkType.Tower, 2);
+        // 中国大陸
+        S("瀋陽", "瀋陽故宮", LandmarkType.Castle, 2);
+        S("大連", "星海広場・旅順港", LandmarkType.Bridge, 2);
+        S("北京", "紫禁城（故宮）・天壇祈年殿", LandmarkType.Castle, 2);
+        S("北京", "万里の長城（八達嶺）", LandmarkType.Monument, 1);
+        S("青島", "桟橋（回瀾閣）・嶗山", LandmarkType.Pagoda, 1);
+        S("上海", "東方明珠テレビ塔・外灘", LandmarkType.Tower, 3);
+        S("福州", "三坊七巷・鼓山湧泉寺", LandmarkType.Temple, 1);
+        S("アモイ", "コロンス島（鼓浪嶼）・日光岩", LandmarkType.ClockTower, 1);
+        S("香港", "ヴィクトリア・ピーク＆天壇大仏", LandmarkType.Buddha);
+        // 台湾・フィリピン
         S("台北", "台北101", LandmarkType.Tower, 1);
         S("台北", "九份・龍山寺", LandmarkType.Temple, 1);
         S("台中", "日月潭", LandmarkType.Lake);
@@ -153,6 +177,7 @@ public static class Spots
         S("台南", "赤崁楼・安平古堡", LandmarkType.Castle, 2);
         S("高雄", "蓮池潭 龍虎塔", LandmarkType.Pagoda, 1);
         S("台東", "三仙台 八拱橋", LandmarkType.Bridge, 1);
+        S("マニラ", "イントラムロス・リサール記念碑", LandmarkType.Monument, 2);
     }
 
     public static IEnumerable<Spot> At(City city) => All.Where(s => s.City == city);

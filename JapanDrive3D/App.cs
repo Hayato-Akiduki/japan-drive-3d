@@ -107,6 +107,9 @@ public sealed partial class App
                 case "--mapzoom" when i + 1 < args.Length: app.bigMapZoom = float.Parse(args[++i]); app.centerMapOnPlayer = true; break;
                 case "--steer" when i + 1 < args.Length: app.demoSteer = float.Parse(args[++i]); break;
                 case "--heading" when i + 1 < args.Length: app.heading = float.Parse(args[++i]); break;
+                case "--mt": app.demoMt = true; break;
+                case "--gear" when i + 1 < args.Length: app.demoGear = int.Parse(args[++i]); app.demoMt = true; break;
+                case "--drift": app.demoDrift = true; break;
             }
         }
         if (app.shotFile != null && !stayOnTitle) app.pendingStart = app.demoTour ? GameMode.Tour : GameMode.Free;
@@ -208,6 +211,11 @@ public sealed partial class App
         if (shotFile == null) turretTarget = 0;
         if (demoVehicle is VehicleKind dv) playerKind = dv;
         if (mode != GameMode.Free && IsFlyer(playerKind)) playerKind = VehicleKind.Sports;
+        if (demoMt) manualTransmission = true;
+        manualGear = demoGear is int dg ? Math.Clamp(dg, -1, 6) : 1;
+        engineRpm = 850f;
+        revLimiting = isDrifting = false;
+        driftYaw = 0f;
         clearRecorded = false;
         lastViolations = lastCrashes = lastToll = 0;
         Audio.Play(Audio.Select);
@@ -284,6 +292,11 @@ public sealed partial class App
         upWasDown = up;
         game.Accel = up;
         game.Brake = Raylib.IsKeyDown(KeyboardKey.Down) || Raylib.IsKeyDown(KeyboardKey.S);
+
+        UpdateTransmission(dt, (float)game.Speed, up && game.Road != null, out float accelMul, out float engineBrakeDecel, out float gearCapKmh);
+        game.AccelFactor = accelMul;
+        game.EngineBrakeDecel = engineBrakeDecel;
+        game.SpeedCap = manualTransmission && IsGearboxVehicle ? Math.Min(VehicleSpeedCap, gearCapKmh) : VehicleSpeedCap;
 
         game.Update(dt);
         if (game.Road != null && game.Road != lastRoad)
@@ -411,13 +424,16 @@ public sealed partial class App
 
         if (!d.Arrived)
         {
-            if (up) d.Kmh += 28 * dt;
+            UpdateTransmission(dt, (float)d.Kmh, up, out float accelMul, out float engineBrakeDecel, out float gearCapKmh);
+            if (engineBrakeDecel > 0f && (!up || d.Kmh > gearCapKmh)) d.Kmh = Math.Max(0, d.Kmh - engineBrakeDecel * dt);
+            if (up && accelMul > 0f) d.Kmh += 28 * accelMul * dt;
             else if (brake) d.Kmh -= 70 * dt;
-            else d.Kmh -= 4 * dt;
+            else if (engineBrakeDecel <= 0f) d.Kmh -= 4 * dt;
             // 名所の前で自動的に止まる
             double remain = d.EndS - playerS;
             double maxKmh = Math.Sqrt(Math.Max(0, remain - 1) * 2 * 4.5) * 3.6;
-            d.Kmh = Math.Clamp(d.Kmh, 0, Math.Min(Math.Min(80, VehicleSpeedCap), maxKmh));
+            double cap = manualTransmission && IsGearboxVehicle ? Math.Min(80, Math.Min(VehicleSpeedCap, gearCapKmh)) : Math.Min(80, VehicleSpeedCap);
+            d.Kmh = Math.Clamp(d.Kmh, 0, Math.Min(cap, maxKmh));
             playerS += d.Kmh / 3.6 * dt;
             game.SetClock(game.GameMinutes + dt * 0.5);
             if (remain < 3 && d.Kmh < 4)
@@ -585,6 +601,8 @@ public sealed partial class App
             pos += j;
             target += j;
         }
+        if (freeRoam && free != null && !IsFlyer(playerKind))
+            pos.Y = Math.Max(pos.Y, FreeWorld.WaterY + 0.35f);
         camera.Position = pos;
         camera.Target = target;
     }
@@ -606,6 +624,7 @@ public sealed partial class App
 
         if (detour != null)
         {
+            HandleTransmissionKeys(allowQE: true);
             if (Raylib.IsKeyPressed(KeyboardKey.Enter) || Raylib.IsKeyPressed(KeyboardKey.KpEnter) ||
                 Raylib.IsKeyPressed(KeyboardKey.Escape) || (detour.Arrived && Raylib.IsKeyPressed(KeyboardKey.Up)))
                 BeginFade(EndDetour);
@@ -613,6 +632,8 @@ public sealed partial class App
             if (Raylib.IsKeyPressed(KeyboardKey.C)) cockpit = !cockpit;
             return;
         }
+
+        HandleTransmissionKeys(allowQE: false);
 
         // 数字キー：停車中は出発、走行中は次の分岐の予約
         var junction = game.JunctionCity;

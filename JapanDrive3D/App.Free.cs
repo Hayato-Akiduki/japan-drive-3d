@@ -27,6 +27,17 @@ public sealed partial class App
     private bool stallWarned;
 
     private static bool IsFlyer(VehicleKind k) => k is VehicleKind.Helicopter or VehicleKind.Airplane or VehicleKind.Fighter;
+    private bool IsGearboxVehicle => !IsFlyer(playerKind) && playerKind is not (VehicleKind.Horse or VehicleKind.Hikyaku);
+
+    // ---- マニュアル操作（6速MT・タコメーター・ドリフト） ----
+    private bool manualTransmission;
+    private int manualGear = 1;     // -1: R（後退）, 0: N（ニュートラル）, 1〜6: 1速〜6速
+    private float engineRpm = 850;
+    private bool revLimiting;
+    private float shiftAnim;
+    private float driftYaw;
+    private bool isDrifting;
+    private float driftSmokeTimer;
 
     // デモ用
     private float demoClimb;
@@ -34,6 +45,216 @@ public sealed partial class App
     private bool demoBigMap;
     private float demoAccel = 3.5f;
     private float demoSteer;
+    private bool demoMt;
+    private int? demoGear;
+    private bool demoDrift;
+
+    private float GearTopKmh(int gear)
+    {
+        float scale = playerKind == VehicleKind.Tank ? 0.62f : playerKind == VehicleKind.Amphibious ? 0.72f : 1.0f;
+        float baseTop = gear switch
+        {
+            <= 1 => 48f,
+            2 => 88f,
+            3 => 132f,
+            4 => 182f,
+            5 => 245f,
+            _ => 340f,
+        };
+        return baseTop * scale;
+    }
+
+    private int AutoGearForKmh(float kmh)
+    {
+        if (kmh < -1f) return -1;
+        float a = Math.Abs(kmh);
+        if (a < 38f) return 1;
+        if (a < 72f) return 2;
+        if (a < 112f) return 3;
+        if (a < 156f) return 4;
+        if (a < 210f) return 5;
+        return 6;
+    }
+
+    private int ActiveGear => manualTransmission ? manualGear : AutoGearForKmh(CurrentKmh);
+
+    private static string GearLabel(int gear, bool mt) => gear switch
+    {
+        < 0 => "R",
+        0 => "N",
+        _ => mt ? $"{gear}速" : $"D{gear}",
+    };
+
+    private void ShiftGear(int delta)
+    {
+        if (!IsGearboxVehicle) return;
+        if (!manualTransmission)
+        {
+            manualTransmission = true;
+            manualGear = AutoGearForKmh(CurrentKmh);
+        }
+        int next = Math.Clamp(manualGear + delta, -1, 6);
+        if (next == manualGear) return;
+        int prev = manualGear;
+        manualGear = next;
+        shiftAnim = 1.0f;
+        Audio.Play(Audio.Shift, 0.85f, delta > 0 ? 1.05f : 0.92f);
+
+        // シフトダウン時に回転数が跳ね上がるブリッピング演出
+        if (delta < 0 && manualGear >= 1 && CurrentKmh > 10f)
+        {
+            float newTop = GearTopKmh(manualGear);
+            engineRpm = Math.Clamp(900f + (CurrentKmh / newTop) * 7400f + 500f, 1500f, 9000f);
+        }
+        else if (delta > 0 && prev >= 1 && manualGear > prev)
+        {
+            engineRpm = Math.Max(1100f, engineRpm * 0.68f);
+        }
+    }
+
+    private void HandleTransmissionKeys(bool allowQE)
+    {
+        if (!IsGearboxVehicle || bigMap || stampBook) return;
+
+        if (Raylib.IsKeyPressed(KeyboardKey.H) || Raylib.IsKeyPressed(KeyboardKey.Tab))
+        {
+            manualTransmission = !manualTransmission;
+            if (manualTransmission)
+            {
+                manualGear = AutoGearForKmh(CurrentKmh);
+                shiftAnim = 1.0f;
+                Audio.Play(Audio.Shift, 0.9f);
+                game.AddLog($"ミッション：6速マニュアル（MT / 現在 {GearLabel(manualGear, true)}）に切替！ E・Shift・ホイール↑でシフトアップ、Q・Ctrl・ホイール↓でシフトダウン");
+            }
+            else
+            {
+                revLimiting = false;
+                Audio.Play(Audio.Select, 0.8f);
+                game.AddLog("ミッション：オートマ（AT）に切り替えました（H キーでいつでも MT に戻せます）。");
+            }
+        }
+
+        float wheel = Raylib.GetMouseWheelMove();
+        bool shiftUp = (allowQE && Raylib.IsKeyPressed(KeyboardKey.E))
+            || Raylib.IsKeyPressed(KeyboardKey.RightShift)
+            || Raylib.IsKeyPressed(KeyboardKey.LeftShift)
+            || Raylib.IsKeyPressed(KeyboardKey.PageUp)
+            || (manualTransmission && wheel > 0.1f);
+
+        bool shiftDown = (allowQE && Raylib.IsKeyPressed(KeyboardKey.Q))
+            || (playerKind != VehicleKind.Tank && (Raylib.IsKeyPressed(KeyboardKey.LeftControl) || Raylib.IsKeyPressed(KeyboardKey.RightControl)))
+            || Raylib.IsKeyPressed(KeyboardKey.PageDown)
+            || (manualTransmission && wheel < -0.1f);
+
+        if (shiftUp) ShiftGear(1);
+        else if (shiftDown) ShiftGear(-1);
+    }
+
+    private void UpdateTransmission(float dt, float kmh, bool throttle, out float accelMul, out float engineBrakeDecel, out float gearCapKmh)
+    {
+        shiftAnim = Math.Max(0f, shiftAnim - dt * 3.5f);
+        if (!IsGearboxVehicle)
+        {
+            engineRpm = 850f;
+            revLimiting = false;
+            isDrifting = false;
+            driftYaw = 0f;
+            accelMul = 1f;
+            engineBrakeDecel = 0f;
+            gearCapKmh = 9999f;
+            return;
+        }
+
+        int g = ActiveGear;
+        float top = GearTopKmh(Math.Max(1, Math.Abs(g)));
+
+        if (!manualTransmission)
+        {
+            revLimiting = false;
+            float ratio = Math.Clamp(Math.Abs(kmh) / top, 0f, 1f);
+            float targetRpm = Math.Abs(kmh) < 0.5f && !throttle ? 850f : 1450f + ratio * 5600f + (throttle ? 450f : 0f);
+            engineRpm += (targetRpm - engineRpm) * Math.Min(1f, dt * 10f);
+            accelMul = 1f;
+            engineBrakeDecel = 0f;
+            gearCapKmh = 9999f;
+            return;
+        }
+
+        if (g == 0)
+        {
+            // N（ニュートラル）：アクセルで軽快に空吹かしできるが駆動力は伝わらない
+            float targetRpm = throttle ? 8300f : 850f;
+            engineRpm += (targetRpm - engineRpm) * Math.Min(1f, dt * (throttle ? 10f : 5.5f));
+            revLimiting = throttle && engineRpm > 7900f;
+            accelMul = 0f;
+            engineBrakeDecel = 0f;
+            gearCapKmh = 0f;
+            return;
+        }
+
+        if (g < 0)
+        {
+            // R（リバース）
+            float revTop = 44f;
+            float revKmh = Math.Max(0f, -kmh);
+            float targetRpm = 950f + (revKmh / revTop) * 7200f + (throttle ? 400f : 0f);
+            engineRpm += (Math.Clamp(targetRpm, 850f, 8900f) - engineRpm) * Math.Min(1f, dt * 12f);
+            revLimiting = throttle && revKmh >= revTop - 1f;
+            accelMul = 0f;
+            engineBrakeDecel = kmh > 1f ? 95f : 0f;
+            gearCapKmh = 0f;
+            return;
+        }
+
+        // 1速〜6速
+        float gearRatio = Math.Max(0f, kmh) / top;
+        float rpmTarget = 900f + gearRatio * 7500f + (throttle && kmh < 4f ? 650f : 0f);
+        engineRpm += (Math.Clamp(rpmTarget, 820f, 9200f) - engineRpm) * Math.Min(1f, dt * 14f);
+
+        bool hasHardCap = !(freeRoam && g == 6); // フリーモード6速はオーバードライブ（最高速無制限）
+        gearCapKmh = hasHardCap ? top : 9999f;
+        engineBrakeDecel = 0f;
+
+        if (hasHardCap && kmh > top + 2.5f)
+        {
+            // 高速走行中に低いギアへシフトダウンしたときの強烈なエンジンブレーキ＆オーバーレブ
+            revLimiting = true;
+            accelMul = 0f;
+            engineBrakeDecel = 85f + (kmh - top) * 2.0f;
+            return;
+        }
+
+        if (hasHardCap && throttle && kmh >= top - 0.6f)
+        {
+            // レブリミッター作動（シフトアップするまで頭打ち）
+            revLimiting = true;
+            accelMul = 0f;
+            return;
+        }
+
+        revLimiting = false;
+
+        // パワーバンド（3,800〜7,800 rpm）で最大1.38倍の鋭い加速、低回転×高ギアではトルク不足（ノッキング気味）
+        if (engineRpm >= 3800f && engineRpm <= 8100f)
+        {
+            accelMul = g == 1 ? 1.45f : g == 2 ? 1.40f : 1.35f;
+        }
+        else if (engineRpm < 2500f && g >= 3)
+        {
+            float lug = Math.Clamp((engineRpm - 900f) / 1600f, 0f, 1f);
+            accelMul = 0.25f + lug * 0.60f;
+        }
+        else
+        {
+            accelMul = g <= 2 ? 1.25f : 1.0f;
+        }
+
+        // アクセルオフ時のエンジンブレーキ（低速ギアほど強く効く）
+        if (!throttle && kmh > 2f)
+        {
+            engineBrakeDecel = (7 - g) * 4.8f * Math.Clamp(engineRpm / 5200f, 0.45f, 1.5f);
+        }
+    }
 
     private void StartFree()
     {
@@ -55,7 +276,12 @@ public sealed partial class App
         altitude = pitch = bank = terrainPitch = terrainBank = 0;
         carAir = prevAirborne = false;
         carVy = climbRate = 0;
-        freeOnWater = false;
+        freeOnWater = !free.OnRoad(free.PX, free.PZ) && free.IsInWater(free.PX, free.PZ);
+        if (freeOnWater && !IsFlyer(playerKind))
+        {
+            float floatY = playerKind == VehicleKind.Amphibious ? FreeWorld.WaterY - 0.72f : FreeWorld.WaterY - 0.68f;
+            freeY = groundLevel = Math.Max(freeY, floatY);
+        }
         animDist = 0;
         waypoint = null;
         game.Log.Clear();
@@ -110,26 +336,120 @@ public sealed partial class App
         float ground = flyer ? Math.Max(surface, f.RoofY(f.PX, f.PZ)) : surface;
         bool airborne = flyer ? freeY > ground + 0.5f : carAir;
 
-        // 速度制限なし：踏み続けるほど速くなる
-        if (up) freeKmh += Accel(playerKind) * (1 + Math.Max(0, freeKmh) / 500f) * dt;
-        else if (down && airborne) freeKmh = Math.Max(0, freeKmh - 60 * dt);   // 空中ではバックしない
-        else if (down) freeKmh = freeKmh > 0 ? Math.Max(0, freeKmh - 140 * dt) : Math.Max(-30, freeKmh - 20 * dt);
+        UpdateTransmission(dt, freeKmh, up, out float accelMul, out float engineBrakeDecel, out float gearCapKmh);
+
+        // 加速・ギア制御・エンジンブレーキ
+        if (manualTransmission && IsGearboxVehicle)
+        {
+            if (manualGear == -1)
+            {
+                // R（リバース）ギア：アクセル（↑/W）または↓/Sで力強くバック、前進中なら急制動
+                if (up || down)
+                {
+                    freeKmh = freeKmh > 0.5f
+                        ? Math.Max(0, freeKmh - 165 * dt)
+                        : Math.Max(-44f, freeKmh - Accel(playerKind) * 0.85f * dt);
+                }
+                else
+                {
+                    freeKmh -= freeKmh * 0.25f * dt;
+                    if (Math.Abs(freeKmh) < 0.5f) freeKmh = 0;
+                }
+            }
+            else if (manualGear == 0)
+            {
+                // N（ニュートラル）：アクセルは空吹かしになり、ブレーキまたは自然な惰性減速のみ
+                if (down) freeKmh = freeKmh > 0 ? Math.Max(0, freeKmh - 140 * dt) : Math.Min(0, freeKmh + 140 * dt);
+                else
+                {
+                    freeKmh -= freeKmh * 0.08f * dt;
+                    if (Math.Abs(freeKmh) < 0.5f) freeKmh = 0;
+                }
+            }
+            else
+            {
+                // 1速〜6速：パワーバンド加速・レブリミッター・エンジンブレーキ
+                if (engineBrakeDecel > 0f && (!up || freeKmh > gearCapKmh))
+                    freeKmh = Math.Max(0f, freeKmh - engineBrakeDecel * dt);
+
+                if (up && accelMul > 0f)
+                {
+                    float nextKmh = freeKmh + Accel(playerKind) * accelMul * (1 + Math.Max(0, freeKmh) / 500f) * dt;
+                    freeKmh = freeKmh <= gearCapKmh ? Math.Min(gearCapKmh, nextKmh) : freeKmh;
+                }
+                else if (down)
+                {
+                    freeKmh = Math.Max(0, freeKmh - 150 * dt);
+                }
+                else if (engineBrakeDecel <= 0f)
+                {
+                    freeKmh -= freeKmh * 0.10f * dt;
+                    if (Math.Abs(freeKmh) < 0.5f) freeKmh = 0;
+                }
+            }
+        }
         else
         {
-            freeKmh -= freeKmh * 0.12f * dt;
-            if (Math.Abs(freeKmh) < 0.5f) freeKmh = 0;
+            // AT（または航空機・馬など）：速度制限なし、踏み続けるほど速くなる
+            if (up) freeKmh += Accel(playerKind) * (1 + Math.Max(0, freeKmh) / 500f) * dt;
+            else if (down && airborne) freeKmh = Math.Max(0, freeKmh - 60 * dt);   // 空中ではバックしない
+            else if (down) freeKmh = freeKmh > 0 ? Math.Max(0, freeKmh - 140 * dt) : Math.Max(-30, freeKmh - 20 * dt);
+            else
+            {
+                freeKmh -= freeKmh * 0.12f * dt;
+                if (Math.Abs(freeKmh) < 0.5f) freeKmh = 0;
+            }
         }
 
         bool road = f.OnRoad(f.PX, f.PZ);
-        bool water = !road && !f.IsLand(f.PX, f.PZ);
+        bool water = !road && f.IsInWater(f.PX, f.PZ);
         if (water && !airborne && playerKind != VehicleKind.Amphibious && !flyer)
             freeKmh = Math.Clamp(freeKmh, -15, 30); // 水の中はゆっくり
+
+        // サイドブレーキ＆ドリフト（地上車両で Space キー）
+        bool canDrift = !flyer && !carAir && !water && playerKind is VehicleKind.Sports or VehicleKind.Amphibious;
+        bool handbrake = canDrift && (Raylib.IsKeyDown(KeyboardKey.Space) || (shotFile != null && demoDrift && demoTime > 1.0f));
+        if (handbrake && Math.Abs(freeKmh) > 24f && Math.Abs(steer) > 0.05f)
+        {
+            isDrifting = true;
+            float targetDrift = -steer * Math.Clamp(Math.Abs(freeKmh) * 0.28f, 14f, 34f);
+            driftYaw += (targetDrift - driftYaw) * Math.Min(1f, dt * 8.5f);
+            // アクセルを踏みながらパワーバンドを維持すると速度を落とさず豪快なパワードリフトができる
+            float scrub = (up && engineRpm > 3600f) ? 0.06f : 0.22f;
+            freeKmh -= freeKmh * scrub * dt;
+
+            driftSmokeTimer -= dt;
+            if (driftSmokeTimer <= 0f)
+            {
+                driftSmokeTimer = 0.045f;
+                double carRad = (heading - driftYaw) * Math.PI / 180.0;
+                double bx = f.PX - Math.Sin(carRad) * 1.9, bz = f.PZ - Math.Cos(carRad) * 1.9;
+                double rx = Math.Cos(carRad) * 0.85, rz = -Math.Sin(carRad) * 0.85;
+                AddFxW(FxKind.Dust, bx + rx, freeY + 0.18f, bz + rz, 0.72f, playSound: false);
+                AddFxW(FxKind.Dust, bx - rx, freeY + 0.18f, bz - rz, 0.72f, playSound: false);
+            }
+        }
+        else
+        {
+            if (isDrifting && Math.Abs(driftYaw) > 12f && up && freeKmh > 30f && engineRpm > 3500f)
+            {
+                // ドリフト立ち上がり加速（グリップ回復ブースト）
+                freeKmh += 10f;
+            }
+            isDrifting = false;
+            driftYaw += (0f - driftYaw) * Math.Min(1f, dt * 7.5f);
+            if (handbrake && Math.Abs(freeKmh) > 0.5f)
+            {
+                freeKmh = freeKmh > 0 ? Math.Max(0, freeKmh - 175 * dt) : Math.Min(0, freeKmh + 175 * dt);
+            }
+        }
 
         if (flyer && airborne)
             heading += steer * (playerKind == VehicleKind.Helicopter ? 60 : playerKind == VehicleKind.Fighter ? 55 : 45) * dt;
         else if (!carAir)
         {
             float turn = 75f / (1 + Math.Abs(freeKmh) / 250f) * Math.Min(1, Math.Abs(freeKmh) / 8f);
+            if (isDrifting) turn *= 1.52f;
             heading += steer * turn * dt * (freeKmh < 0 ? -1 : 1);
         }
         heading = (heading % 360 + 360) % 360;
@@ -205,7 +525,9 @@ public sealed partial class App
         {
             float nh = f.SurfaceY(nx, nz);
             float slope = (nh - surface) / (float)Math.Abs(ms * dt);
-            if (slope > 1.1f && nh > surface + 0.3f)
+            // 水際・海岸・川岸や道路への乗り上げ時は絶対に壁判定で押し戻さない（急峻な山の崖のみブロック）
+            bool nearWaterOrRoad = surface < 0.35f || nh < 0.65f || f.OnRoad(nx, nz, 15.0);
+            if (!nearWaterOrRoad && slope > 1.25f && nh > surface + 0.45f)
             {
                 // 急すぎる斜面は壁と同じ
                 if (Math.Abs(freeKmh) > 20 && crashCooldown <= 0)
@@ -217,7 +539,10 @@ public sealed partial class App
                 freeKmh = -freeKmh * 0.2f;
                 move = false;
             }
-            else freeKmh -= Math.Clamp(slope, -2, 2) * 35 * dt;   // 上り坂で遅く、下り坂で速く
+            else if (nearWaterOrRoad)
+                freeKmh -= Math.Clamp(slope, -1f, 0.35f) * 14 * dt;   // 岸辺や浅瀬は力を保って上陸できる
+            else
+                freeKmh -= Math.Clamp(slope, -2, 2) * 35 * dt;        // 上り坂で遅く、下り坂で速く
         }
         if (move)
         {
@@ -228,7 +553,7 @@ public sealed partial class App
 
         // ---- 高さ ----
         road = f.OnRoad(f.PX, f.PZ);
-        bool land = road || f.IsLand(f.PX, f.PZ);
+        bool land = road || !f.IsInWater(f.PX, f.PZ);
         surface = f.SurfaceY(f.PX, f.PZ);
         if (flyer)
         {
@@ -245,9 +570,10 @@ public sealed partial class App
         else
         {
             water = !land;
-            float targetY = land ? surface
-                : playerKind == VehicleKind.Amphibious ? FreeWorld.SeaY - 0.9f + MathF.Sin(time * 1.6f) * 0.15f
-                : FreeWorld.SeaY - 0.8f;
+            float floatY = playerKind == VehicleKind.Amphibious
+                ? FreeWorld.WaterY - 0.72f + MathF.Sin(time * 1.6f) * 0.12f
+                : FreeWorld.WaterY - 0.68f;
+            float targetY = land ? surface : Math.Max(surface, floatY);
             if (carAir)
             {
                 carVy -= 22 * dt;
@@ -316,14 +642,14 @@ public sealed partial class App
         if (water != freeOnWater)
         {
             freeOnWater = water;
-            AddFxW(FxKind.Splash, f.PX, FreeWorld.SeaY, f.PZ, 1.6f);
+            AddFxW(FxKind.Splash, f.PX, FreeWorld.WaterY, f.PZ, 1.6f);
             if (water) game.AddLog(playerKind == VehicleKind.Amphibious ? "水に入りました！ 水上を航行します。" : "水に入りました（水の中はゆっくりしか進めません）。");
         }
         wakeTimer -= dt;
         if (water && Math.Abs(ms) > 2 && wakeTimer <= 0)
         {
             wakeTimer = 0.07f;
-            AddFxW(FxKind.Wake, f.PX - Math.Sin(hr) * 4.5, FreeWorld.SeaY + 0.05f, f.PZ - Math.Cos(hr) * 4.5, 0.25f + Math.Abs(ms) * 0.012f);
+            AddFxW(FxKind.Wake, f.PX - Math.Sin(hr) * 4.5, FreeWorld.WaterY + 0.05f, f.PZ - Math.Cos(hr) * 4.5, 0.25f + Math.Abs(ms) * 0.012f);
         }
 
         game.SetClock(game.GameMinutes + dt);
@@ -399,6 +725,7 @@ public sealed partial class App
 
     private void HandleFreeKeys()
     {
+        HandleTransmissionKeys(allowQE: true);
         if (Raylib.IsKeyPressed(KeyboardKey.V)) SwitchVehicle();
         if (Raylib.IsKeyPressed(KeyboardKey.C)) cockpit = !cockpit;
         if (Raylib.IsKeyPressed(KeyboardKey.B)) stampBook = true;
@@ -574,20 +901,20 @@ public sealed partial class App
     {
         var f = free!;
         double camDist = Math.Sqrt((x - f.PX) * (x - f.PX) + (z - f.PZ) * (z - f.PZ));
-        bool onWater = !f.IsLand(x, z) && !f.OnRoad(x, z, 10);
+        bool onWater = f.IsInWater(x, z) && !f.OnRoad(x, z, 10);
 
         // 中心部に超巨大爆発エフェクト（巨大火球・衝撃波リング・キノコ雲）を発生させる
-        AddFxW(FxKind.MegaBlast, x, onWater ? FreeWorld.SeaY : y + 1.0f, z, 1.0f, playSound: false);
+        AddFxW(FxKind.MegaBlast, x, onWater ? FreeWorld.WaterY : y + 1.0f, z, 1.0f, playSound: false);
         Audio.PlayAt(Audio.Explosion, camDist * 0.25, 1.0f);
         Audio.Play(Audio.Explosion, Math.Clamp(1.0f - (float)(camDist / 4500.0), 0.35f, 1.0f), 0.58f);
 
         if (onWater)
         {
-            AddFxW(FxKind.Splash, x, FreeWorld.SeaY, z, 14.0f, playSound: false);
+            AddFxW(FxKind.Splash, x, FreeWorld.WaterY, z, 14.0f, playSound: false);
             for (int i = 0; i < 8; i++)
             {
                 double a = i * Math.PI * 0.25;
-                AddFxW(FxKind.Splash, x + Math.Cos(a) * 90, FreeWorld.SeaY, z + Math.Sin(a) * 90, 7.5f, playSound: false);
+                AddFxW(FxKind.Splash, x + Math.Cos(a) * 90, FreeWorld.WaterY, z + Math.Sin(a) * 90, 7.5f, playSound: false);
             }
         }
 
@@ -743,13 +1070,16 @@ public sealed partial class App
         if (IsFlyer(playerKind))
         {
             DrawPlayerAircraft(f);
+            f.DrawWater();
             DrawCombat3D();
             return;
         }
         if (!cockpit)
-            scene.DrawVehicleAt(f.R(f.PX, freeY, f.PZ), -heading + steerYaw, PlayerColor, playerKind, FreeSpin,
-                braking: game.Brake, wheelSteer: playerKind == VehicleKind.Sports ? steerYaw * 2.5f : 0,
+            scene.DrawVehicleAt(f.R(f.PX, freeY, f.PZ), -heading + steerYaw + driftYaw, PlayerColor, playerKind, FreeSpin,
+                braking: game.Brake || (isDrifting && !Raylib.IsKeyDown(KeyboardKey.Up) && !Raylib.IsKeyDown(KeyboardKey.W)),
+                wheelSteer: playerKind == VehicleKind.Sports ? steerYaw * 2.5f - driftYaw * 0.55f : 0,
                 turretYaw: turretYaw, recoil: recoil, shadow: !freeOnWater && !carAir, pitch: terrainPitch, bank: terrainBank);
+        f.DrawWater();
         DrawCombat3D();
     }
 
@@ -896,8 +1226,8 @@ public sealed partial class App
             : IsFlyer(playerKind)
             ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降（140km/h 以上で離陸）　V 乗り物　M 地図・ワープ　B スタンプ帳　C 視点"
             : playerKind == VehicleKind.Tank
-            ? "↑↓ 前進/後退（速度無制限）　←→ ハンドル　マウス・Z/X 砲塔　左クリック・Ctrl 発射　V 乗り物　M 地図・ワープ　B スタンプ帳　C 視点"
-            : "↑↓ 前進/後退（速度無制限）　←→ ハンドル　V 乗り物切替　M 地図（クリックでワープ）　B スタンプ帳　C 視点　N タイトル";
+            ? "↑↓ 前進/後退　←→ ハンドル　H AT/MT切替(Q/E・Shift・ホイール ギア)　マウス・Z/X 砲塔　左クリック・Ctrl 発射　V 乗り物　M 地図"
+            : "↑↓ アクセル/ブレーキ　←→ ハンドル　Space ドリフト　H AT/MT切替（E/Shift シフトUP・Q/Ctrl シフトDOWN）　V 乗り物　M 地図　B スタンプ帳　C 視点";
         var hm = Measure(help, 13);
         Text(help, (sw - hm.X) / 2, sh - 24 * u, 13, new Color(255, 255, 255, 170));
 

@@ -282,9 +282,9 @@ public sealed class MainForm : Form
         }
 
         // 道路
-        using var expPen = new Pen(Color.FromArgb(46, 139, 87), 4f);
-        using var bridgePen = new Pen(Color.FromArgb(120, 90, 200), 4f);
-        using var ferryPen = new Pen(Color.FromArgb(30, 90, 200), 2.5f) { DashStyle = DashStyle.Dash };
+        using var expPen = new Pen(Color.FromArgb(46, 139, 87), 4f) { LineJoin = LineJoin.Round };
+        using var bridgePen = new Pen(Color.FromArgb(120, 90, 200), 4f) { LineJoin = LineJoin.Round };
+        using var ferryPen = new Pen(Color.FromArgb(30, 90, 200), 2.5f) { DashStyle = DashStyle.Dash, LineJoin = LineJoin.Round };
         foreach (var r in MapData.Roads)
         {
             var pen = r.Type switch
@@ -293,14 +293,16 @@ public sealed class MainForm : Form
                 RoadType.Bridge or RoadType.MegaBridge => bridgePen,
                 _ => expPen,
             };
-            g.DrawLine(pen, CityPt(r.A), CityPt(r.B));
+            var pts = r.Points.Select(p => ToScreen(Game.ToWorld(p.Lat, p.Lon))).ToArray();
+            g.DrawLines(pen, pts);
         }
 
         // 走行中の道路を強調
         if (game.Road != null)
         {
-            using var cur = new Pen(Color.FromArgb(220, 30, 30), 3f);
-            g.DrawLine(cur, CityPt(game.From), CityPt(game.To));
+            using var cur = new Pen(Color.FromArgb(220, 30, 30), 3f) { LineJoin = LineJoin.Round };
+            var pts = game.Road.Points.Select(p => ToScreen(Game.ToWorld(p.Lat, p.Lon))).ToArray();
+            g.DrawLines(cur, pts);
         }
 
         // 道路名（拡大時のみ）
@@ -308,9 +310,8 @@ public sealed class MainForm : Form
         {
             foreach (var r in MapData.Roads)
             {
-                var a = CityPt(r.A);
-                var b = CityPt(r.B);
-                var mid = new PointF((a.X + b.X) / 2, (a.Y + b.Y) / 2);
+                var (mLat, mLon) = r.Sample(0.5);
+                var mid = ToScreen(Game.ToWorld(mLat, mLon));
                 DrawLabel(g, r.Name, fontSmall, mid, Color.FromArgb(30, 70, 50), center: true);
             }
         }
@@ -320,12 +321,14 @@ public sealed class MainForm : Form
         {
             var navRoad = game.NextNavRoad();
             var a = CityPt(game.AtCity);
-            using var choicePen = new Pen(Color.FromArgb(230, 255, 210, 0), 7f);
+            using var choicePen = new Pen(Color.FromArgb(230, 255, 210, 0), 7f) { LineJoin = LineJoin.Round };
             for (int i = 0; i < game.AtCity.Roads.Count; i++)
             {
                 var r = game.AtCity.Roads[i];
-                var b = CityPt(r.Other(game.AtCity));
-                g.DrawLine(choicePen, a, b);
+                var pts = r.Points.Select(p => ToScreen(Game.ToWorld(p.Lat, p.Lon))).ToArray();
+                g.DrawLines(choicePen, pts);
+                var np = r.NextPointFrom(game.AtCity);
+                var b = ToScreen(Game.ToWorld(np.Lat, np.Lon));
                 float dx = b.X - a.X, dy = b.Y - a.Y;
                 float len = MathF.Max(1, MathF.Sqrt(dx * dx + dy * dy));
                 float t = MathF.Min(len * 0.5f, 60) / len;

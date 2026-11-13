@@ -336,12 +336,104 @@ public sealed class Scene
         Wall(s0, s1, 3.6f, 0, 0.08f, Rgb(140, 140, 135));
     }
 
+    private static Color TintShade(Color c, float k) => new(
+        (byte)Math.Clamp((int)(c.R * k), 0, 255),
+        (byte)Math.Clamp((int)(c.G * k), 0, 255),
+        (byte)Math.Clamp((int)(c.B * k), 0, 255),
+        c.A);
+
+    private static float SceneSideShade(int side) => side switch { 0 => 0.92f, 1 => 0.83f, 2 => 0.74f, _ => 1.00f };
+
+    private void DrawSceneBox(Vector3 p, float hx, float y0, float y1, float hz, Color wallCol, Color roofCol, bool lit = false)
+    {
+        float x0 = p.X - hx, x1 = p.X + hx, z0 = p.Z - hz, z1 = p.Z + hz;
+        var tc = lit ? roofCol : TintShade(roofCol, 1.07f);
+        V(new(x0, y1, z0), tc, lit); V(new(x0, y1, z1), tc, lit); V(new(x1, y1, z1), tc, lit); V(new(x1, y1, z0), tc, lit);
+        var cpz = lit ? wallCol : TintShade(wallCol, SceneSideShade(2));
+        V(new(x0, y0, z1), cpz, lit); V(new(x1, y0, z1), cpz, lit); V(new(x1, y1, z1), cpz, lit); V(new(x0, y1, z1), cpz, lit);
+        var cnz = lit ? wallCol : TintShade(wallCol, SceneSideShade(3));
+        V(new(x1, y0, z0), cnz, lit); V(new(x0, y0, z0), cnz, lit); V(new(x0, y1, z0), cnz, lit); V(new(x1, y1, z0), cnz, lit);
+        var cpx = lit ? wallCol : TintShade(wallCol, SceneSideShade(0));
+        V(new(x1, y0, z1), cpx, lit); V(new(x1, y0, z0), cpx, lit); V(new(x1, y1, z0), cpx, lit); V(new(x1, y1, z1), cpx, lit);
+        var cnx = lit ? wallCol : TintShade(wallCol, SceneSideShade(1));
+        V(new(x0, y0, z0), cnx, lit); V(new(x0, y0, z1), cnx, lit); V(new(x0, y1, z1), cnx, lit); V(new(x0, y1, z0), cnx, lit);
+    }
+
+    private void AddSceneFaceQuad(Vector3 p, float hx, float hz, int side, float u0, float u1, float y0, float y1,
+        float outOff, Color c, bool lit = false)
+    {
+        if (u1 <= u0 || y1 <= y0) return;
+        float nx, nz, tx, tz, depth;
+        switch (side)
+        {
+            case 0: nx = 1; nz = 0; tx = 0; tz = -1; depth = hx; break;
+            case 1: nx = -1; nz = 0; tx = 0; tz = 1; depth = hx; break;
+            case 2: nx = 0; nz = 1; tx = 1; tz = 0; depth = hz; break;
+            default: nx = 0; nz = -1; tx = -1; tz = 0; depth = hz; break;
+        }
+        float dist = depth + outOff;
+        float ax = p.X + nx * dist + tx * u0, az = p.Z + nz * dist + tz * u0;
+        float bx = p.X + nx * dist + tx * u1, bz = p.Z + nz * dist + tz * u1;
+        var col = lit ? c : TintShade(c, SceneSideShade(side));
+        V(new(ax, y0, az), col, lit);
+        V(new(bx, y0, bz), col, lit);
+        V(new(bx, y1, bz), col, lit);
+        V(new(ax, y1, az), col, lit);
+    }
+
     private void DrawTown()
     {
-        // 家並み
+        // 家並み（本体・サッシ窓・玄関・軒庇を一括描画）
         const double slot = 16;
         long k0 = (long)Math.Floor((PlayerS - 60) / slot);
         long k1 = (long)Math.Floor((PlayerS + 600) / slot);
+        Rlgl.Begin(DrawMode.Quads);
+        for (long k = k0; k <= k1; k++)
+        {
+            double s = k * slot;
+            if (EnvAt(s) != Env.Local || s > LocalEndS - 30) continue;
+            for (int side = -1; side <= 1; side += 2)
+            {
+                long id = k * 2 + (side + 1) / 2 + 5000;
+                if (Hash(id * 17) > 0.8f) continue;
+                float u = side * (11 + Hash(id * 17 + 1) * 6);
+                float w = 7 + Hash(id * 17 + 2) * 3, h = 5 + Hash(id * 17 + 3) * 2.5f;
+                var p = P(s + Hash(id * 17 + 4) * 4, u, 0);
+                int tone = 200 + (int)(Hash(id * 17 + 5) * 42);
+                var wallC = Rgb(tone, tone - 6, tone - 20);
+                float hx = w * 0.5f, hz = 4.0f;
+                DrawSceneBox(p, hx, -0.1f, h - 0.14f, hz, wallC, Rgb(230, 230, 226));
+                DrawSceneBox(p, hx + 0.45f, h - 0.14f, h, hz + 0.45f, Rgb(235, 235, 232), Rgb(80, 82, 86));
+
+                // 道路向きの側面・前面の窓・玄関ドア
+                int roadFace = side > 0 ? 0 : 1; // +u側(左=-Xdraw?) → Pで-uになるため side>0 なら -X、道路は+X向き
+                for (int fs = 0; fs < 4; fs++)
+                {
+                    float span = fs <= 1 ? hz : hx;
+                    int fl = h > 6.2f ? 2 : 1;
+                    for (int f = 0; f < fl; f++)
+                    {
+                        float y0 = f == 0 ? 1.0f : 3.55f, y1 = Math.Min(h - 0.45f, y0 + 1.25f);
+                        if (y1 <= y0 + 0.3f) continue;
+                        bool lit = Night && Hash(id * 29 + fs * 7 + f) < 0.62f;
+                        var gCol = Night ? (lit ? Rgb(255, 214, 130) : Rgb(22, 26, 38)) : Rgb(50, 74, 96);
+                        if (f == 0 && fs == roadFace)
+                        {
+                            AddSceneFaceQuad(p, hx, hz, fs, -1.6f, -0.4f, 0.05f, 2.2f, 0.045f, Rgb(104, 62, 38));
+                            AddSceneFaceQuad(p, hx, hz, fs, 0.5f, 2.2f, y0, y1, 0.045f, gCol, lit: lit);
+                        }
+                        else
+                        {
+                            AddSceneFaceQuad(p, hx, hz, fs, -span * 0.55f, -0.35f, y0, y1, 0.045f, gCol, lit: lit);
+                            AddSceneFaceQuad(p, hx, hz, fs, 0.35f, span * 0.55f, y0, y1, 0.045f, gCol, lit: lit);
+                        }
+                    }
+                }
+            }
+        }
+        Rlgl.End();
+
+        // 屋根（三角錐屋根）
         for (long k = k0; k <= k1; k++)
         {
             double s = k * slot;
@@ -354,10 +446,7 @@ public sealed class Scene
                 float w = 7 + Hash(id * 17 + 2) * 3, h = 5 + Hash(id * 17 + 3) * 2.5f;
                 var p = P(s + Hash(id * 17 + 4) * 4, u, 0);
                 float d = Vector3.Distance(p, cam);
-                int tone = 200 + (int)(Hash(id * 17 + 5) * 50);
-                var wallC = Night ? FogC(Rgb(230, 200, 130), d, lit: Hash(id * 17 + 6) < 0.6f) : FogC(Rgb(tone, tone - 8, tone - 25), d);
-                Raylib.DrawCube(p + new Vector3(0, h / 2, 0), w, h, 8, wallC);
-                var roofC = FogC(Hash(id * 17 + 7) < 0.5f ? Rgb(70, 75, 90) : Rgb(120, 70, 50), d);
+                var roofC = FogC(Hash(id * 17 + 7) < 0.5f ? Rgb(62, 68, 84) : Rgb(118, 66, 48), d);
                 Rlgl.PushMatrix();
                 Rlgl.Translatef(p.X, h, p.Z);
                 Rlgl.Scalef(w / 2 + 0.7f, 1, 4.7f);
@@ -458,6 +547,7 @@ public sealed class Scene
         const double slot = 32;
         long k0 = (long)Math.Floor((PlayerS - 60) / slot);
         long k1 = (long)Math.Floor((PlayerS + 700) / slot);
+        Rlgl.Begin(DrawMode.Quads);
         for (long k = k0; k <= k1; k++)
         {
             for (int side = -1; side <= 1; side += 2)
@@ -470,14 +560,61 @@ public sealed class Scene
                 float w = 10 + Hash(id * 13 + 3) * 16;
                 float dep = 10 + Hash(id * 13 + 4) * 16;
                 float h = 8 + Hash(id * 13 + 5) * Hash(id * 13 + 6) * 70;
-                var p = P(s, u, h / 2);
-                float d = Vector3.Distance(p, cam);
-                int g = 150 + (int)(Hash(id * 13 + 7) * 80);
-                var c = FogC(Rgb(g, g - 5, g - 15), d);
-                if (Night) c = FogC(Lerp(Rgb(40, 40, 50), Rgb(230, 200, 120), Hash(id * 13 + 8) * 0.5f), d, lit: true);
-                Raylib.DrawCube(p, w, h, dep, c);
+                var p = P(s, u, 0);
+                float hx = w * 0.5f, hz = dep * 0.5f;
+                int g = 148 + (int)(Hash(id * 13 + 7) * 76);
+                var wallCol = Rgb(g, g - 4, g - 12);
+                var roofCol = Rgb(98, 102, 110);
+                DrawSceneBox(p, hx, -0.2f, h, hz, wallCol, roofCol);
+
+                // 高層にはセットバック塔屋
+                if (h > 28f)
+                    DrawSceneBox(p, hx * 0.52f, h, h + 3.8f, hz * 0.52f, TintShade(wallCol, 0.86f), roofCol);
+
+                // 階層窓帯（昼は青灰ガラス＋縦マリオン柱、夜は部屋単位に光る窓）
+                int bands = Math.Clamp((int)((h - 4f) / 3.8f), 1, 10);
+                float step = Math.Max(3.2f, (h - 3.6f) / bands);
+                for (int b = 0; b < bands; b++)
+                {
+                    float y0 = 2.6f + b * step;
+                    float y1 = Math.Min(h - 0.8f, y0 + 1.85f);
+                    if (y1 <= y0 + 0.4f) continue;
+                    for (int fs = 0; fs < 4; fs++)
+                    {
+                        float span = (fs <= 1 ? hz : hx) * 0.86f;
+                        if (Night)
+                        {
+                            AddSceneFaceQuad(p, hx, hz, fs, -span, span, y0, y1, 0.04f, Rgb(20, 26, 38));
+                            for (int c = 0; c < 3; c++)
+                            {
+                                if (Hash(id * 37 + b * 11 + fs * 5 + c) > 0.48f) continue;
+                                float segW = (span * 2f) / 3f;
+                                float lu0 = -span + c * segW + 0.25f;
+                                float lu1 = lu0 + segW - 0.5f;
+                                bool warm = Hash(id + c + b) < 0.45f;
+                                AddSceneFaceQuad(p, hx, hz, fs, lu0, lu1, y0 + 0.1f, y1 - 0.1f, 0.06f,
+                                    warm ? Rgb(255, 212, 130) : Rgb(214, 236, 255), lit: true);
+                            }
+                        }
+                        else
+                        {
+                            AddSceneFaceQuad(p, hx, hz, fs, -span, span, y0, y1, 0.045f, Rgb(50, 78, 108));
+                        }
+                    }
+                }
+                for (int fs = 0; fs < 4; fs++)
+                {
+                    float span = fs <= 1 ? hz : hx;
+                    int cols = Math.Clamp((int)(span / 3.5f) + 1, 3, 5);
+                    for (int m = 0; m < cols; m++)
+                    {
+                        float um = -span * 0.86f + span * 1.72f * m / (cols - 1);
+                        AddSceneFaceQuad(p, hx, hz, fs, um - 0.22f, um + 0.22f, 2.2f, h - 0.5f, 0.068f, wallCol);
+                    }
+                }
             }
         }
+        Rlgl.End();
     }
 
     private void DrawTunnelHills()

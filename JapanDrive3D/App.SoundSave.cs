@@ -79,6 +79,9 @@ public sealed partial class App
         Audio.Kind = playerKind;
         Audio.Kmh = game.OnFerry ? 0 : CurrentKmh;
         Audio.Throttle = Raylib.IsKeyDown(KeyboardKey.Up) || Raylib.IsKeyDown(KeyboardKey.W) ? 1 : 0;
+        Audio.Rpm = engineRpm;
+        Audio.RevLimiting = revLimiting;
+        Audio.Drifting = isDrifting;
         Audio.Altitude = freeRoam ? altitude : 0;
         Audio.OnWater = freeRoam ? freeOnWater : pstate == PlayerState.Water;
 
