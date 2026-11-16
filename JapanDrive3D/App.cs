@@ -62,6 +62,8 @@ public sealed partial class App
     private VehicleKind? demoVehicle;
     private string? demoAt, demoTake;
     private bool demoFire, demoDive;
+    private bool demoSpeedLimitSet;
+    private bool demoHeadingSet;
 
     public static void Main(string[] args)
     {
@@ -106,10 +108,12 @@ public sealed partial class App
                 case "--bigmap": app.demoBigMap = true; break;
                 case "--mapzoom" when i + 1 < args.Length: app.bigMapZoom = float.Parse(args[++i]); app.centerMapOnPlayer = true; break;
                 case "--steer" when i + 1 < args.Length: app.demoSteer = float.Parse(args[++i]); break;
-                case "--heading" when i + 1 < args.Length: app.heading = float.Parse(args[++i]); break;
+                case "--heading" when i + 1 < args.Length: app.heading = float.Parse(args[++i]); app.demoHeadingSet = true; break;
                 case "--mt": app.demoMt = true; break;
                 case "--gear" when i + 1 < args.Length: app.demoGear = int.Parse(args[++i]); app.demoMt = true; break;
                 case "--drift": app.demoDrift = true; break;
+                case "--speed-limit": app.freeSpeedLimit = true; app.demoSpeedLimitSet = true; break;
+                case "--no-speed-limit": app.freeSpeedLimit = false; app.demoSpeedLimitSet = true; break;
             }
         }
         if (app.shotFile != null && !stayOnTitle) app.pendingStart = app.demoTour ? GameMode.Tour : GameMode.Free;
@@ -171,6 +175,8 @@ public sealed partial class App
         }
 
         SaveNow();
+        free?.Dispose();
+        free = null;
         Audio.Shutdown();
         Raylib.UnloadFont(Draw.Font);
         Raylib.CloseWindow();
@@ -222,7 +228,11 @@ public sealed partial class App
         ApplyVehicle();
         freeRoam = mode == GameMode.Free;
         if (freeRoam) StartFree();
-        else if (demoAt != null) game.PlaceAt(MapData.Get(demoAt));
+        else if (demoAt != null)
+        {
+            if (MapData.TryGet(demoAt, out var targetCity)) game.PlaceAt(targetCity);
+            else game.AddLog($"都市「{demoAt}」が見つからないため東京から開始します");
+        }
         if (!freeRoam) game.AddLog("Q/E か数字キーで次の分岐を選べます（選ばなければ直進）。P で名所に寄り道。");
         if (shotFile != null && demoDetour >= 0) StartDetour(Spots.All[Math.Clamp(demoDetour, 0, Spots.All.Count - 1)]);
         if (demoBook)
@@ -385,6 +395,26 @@ public sealed partial class App
         traffic.Update(dt, playerS, playerU, 22);
         if (Raylib.IsKeyPressed(KeyboardKey.One) || Raylib.IsKeyPressed(KeyboardKey.Kp1)) StartGame(GameMode.Tour);
         else if (Raylib.IsKeyPressed(KeyboardKey.Two) || Raylib.IsKeyPressed(KeyboardKey.Kp2)) StartGame(GameMode.Free);
+        else if (Raylib.IsMouseButtonPressed(MouseButton.Left))
+        {
+            int sw = Raylib.GetScreenWidth(), sh = Raylib.GetScreenHeight();
+            float u = Draw.Ui;
+            var mouse = Raylib.GetMousePosition();
+            if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(0, sw, sh, u))) StartGame(GameMode.Tour);
+            else if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(1, sw, sh, u))) StartGame(GameMode.Free);
+            else
+            {
+                float togglesY = TitleTogglesY(sh, u);
+                for (int ti = 0; ti < 3; ti++)
+                {
+                    if (!Raylib.CheckCollisionPointRec(mouse, TitleToggleRect(ti, sw, togglesY, u))) continue;
+                    if (ti == 0) ToggleBgm();
+                    else if (ti == 1) ToggleSfx();
+                    else ToggleFreeSpeedLimit();
+                    break;
+                }
+            }
+        }
         UpdateCamera(dt);
     }
 

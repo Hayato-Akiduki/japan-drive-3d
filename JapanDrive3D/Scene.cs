@@ -37,6 +37,8 @@ public sealed class Scene
     public Color SkyTop { get; private set; }
     public Color Horizon { get; private set; }
     public bool Night => light < 0.6f;
+    public float LightLevel => light;
+    public Color FogColor => fog;
     /// <summary>今フレームに描いた案内標識の中心（HUDで文字を重ねる）。</summary>
     public List<Vector3> Signs { get; } = new();
 

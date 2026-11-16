@@ -189,35 +189,76 @@ public sealed partial class App
         }
     }
 
+    private static Rectangle TitleCardRect(int index, int sw, int sh, float u)
+    {
+        float w = 640 * u, h = 96 * u, x = (sw - w) / 2f;
+        float y = sh * 0.46f;
+        return new Rectangle(x, y + index * (h + 18 * u), w, h);
+    }
+
+    private static float TitleTogglesY(int sh, float u)
+    {
+        float h = 96 * u, y = sh * 0.46f;
+        return y + 2 * (h + 18 * u) + 68 * u;
+    }
+
+    private static Rectangle TitleToggleRect(int index, int sw, float yBase, float u)
+    {
+        float bw = 186 * u, bh = 28 * u, gap = 12 * u;
+        float total = bw * 3 + gap * 2;
+        return new Rectangle((sw - total) / 2f + index * (bw + gap), yBase, bw, bh);
+    }
+
     private void DrawTitle()
     {
         int sw = Raylib.GetScreenWidth(), sh = Raylib.GetScreenHeight();
         float u = Ui;
+        var mouse = Raylib.GetMousePosition();
         Raylib.DrawRectangleGradientV(0, 0, sw, sh, new Color(0, 0, 0, 40), new Color(0, 0, 0, 170));
         TextCentered("日本一周ドライブ 3D", sw / 2f + 3 * u, sh * 0.16f + 3 * u, 64, new Color(0, 0, 0, 150));
         TextCentered("日本一周ドライブ 3D", sw / 2f, sh * 0.16f, 64, Color.White);
         TextCentered("高速道路で日本をめぐり、各地の名所でスタンプを集めよう", sw / 2f, sh * 0.16f + 84 * u, 20, Rgb(230, 235, 245));
 
-        float w = 640 * u, h = 96 * u, x = (sw - w) / 2;
-        float y = sh * 0.46f;
         string[,] items =
         {
             { "1", "日本一周モード", "★の10都市をすべて巡って東京へ戻る。時間と費用を競おう" },
-            { "2", "フリーモード", "道路に関係なく日本中どこでも走れる。速度制限なし。名所スタンプを集めよう" },
+            { "2", "フリーモード", "道路に関係なく日本中どこでも走れる。速度無制限／リアル上限も切替可。名所スタンプを集めよう" },
         };
         for (int i = 0; i < 2; i++)
         {
-            float yy = y + i * (h + 18 * u);
-            Panel(x, yy, w, h, new Color(15, 25, 40, 220));
-            Raylib.DrawCircleV(new Vector2(x + 48 * u, yy + h / 2), 26 * u, Orange);
-            TextCentered(items[i, 0], x + 48 * u, yy + h / 2 - 17 * u, 30, Color.White);
-            Text(items[i, 1], x + 96 * u, yy + 16 * u, 26, Color.White);
-            Text(items[i, 2], x + 96 * u, yy + 56 * u, 15, Sub);
+            var r = TitleCardRect(i, sw, sh, u);
+            bool hover = Raylib.CheckCollisionPointRec(mouse, r);
+            Panel(r.X, r.Y, r.Width, r.Height, hover ? new Color(28, 48, 76, 238) : new Color(15, 25, 40, 220));
+            if (hover) Raylib.DrawRectangleRoundedLinesEx(r, 0.14f, 6, 2f * u, Orange);
+            Raylib.DrawCircleV(new Vector2(r.X + 48 * u, r.Y + r.Height / 2), 26 * u, hover ? Rgb(255, 165, 50) : Orange);
+            TextCentered(items[i, 0], r.X + 48 * u, r.Y + r.Height / 2 - 17 * u, 30, Color.White);
+            Text(items[i, 1], r.X + 96 * u, r.Y + 16 * u, 26, Color.White);
+            Text(items[i, 2], r.X + 96 * u, r.Y + 56 * u, 15, Sub);
         }
-        TextCentered("数字キーで選んでください", sw / 2f, y + 2 * (h + 18 * u) + 10 * u, 16, new Color(255, 255, 255, 200));
-        TextCentered(RecordText(), sw / 2f, y + 2 * (h + 18 * u) + 44 * u, 16, Rgb(255, 220, 150));
-        TextCentered($"F2 BGM {(Audio.BgmOn ? "ON" : "OFF")}　F3 効果音 {(Audio.SfxOn ? "ON" : "OFF")}　（記録は自動でセーブされます）",
-            sw / 2f, y + 2 * (h + 18 * u) + 72 * u, 13, new Color(255, 255, 255, 170));
+        float belowCardsY = sh * 0.46f + 2 * (96 * u + 18 * u);
+        TextCentered("数字キー または クリックで選んでください", sw / 2f, belowCardsY + 8 * u, 16, new Color(255, 255, 255, 200));
+        TextCentered(RecordText(), sw / 2f, belowCardsY + 38 * u, 16, Rgb(255, 220, 150));
+
+        float togglesY = TitleTogglesY(sh, u);
+        (string label, bool on)[] toggles =
+        {
+            ($"F2 BGM {(Audio.BgmOn ? "ON" : "OFF")}", Audio.BgmOn),
+            ($"F3 効果音 {(Audio.SfxOn ? "ON" : "OFF")}", Audio.SfxOn),
+            ($"F4 速度上限 {(freeSpeedLimit ? "ON" : "OFF")}", freeSpeedLimit),
+        };
+        for (int ti = 0; ti < toggles.Length; ti++)
+        {
+            var tr = TitleToggleRect(ti, sw, togglesY, u);
+            bool hover = Raylib.CheckCollisionPointRec(mouse, tr);
+            var (label, on) = toggles[ti];
+            Color bg = hover
+                ? (on ? new Color(45, 95, 145, 235) : new Color(55, 65, 85, 230))
+                : (on ? new Color(24, 62, 105, 210) : new Color(28, 34, 48, 200));
+            Panel(tr.X, tr.Y, tr.Width, tr.Height, bg);
+            if (hover) Raylib.DrawRectangleRoundedLinesEx(tr, 0.25f, 4, 1.5f * u, Orange);
+            TextCentered(label, tr.X + tr.Width / 2f, tr.Y + 6 * u, 13, on ? Color.White : Sub);
+        }
+        TextCentered("（設定・記録は自動でセーブされます）", sw / 2f, togglesY + 34 * u, 12, new Color(255, 255, 255, 165));
         DrawUpdateBanner(sw, sh, u);
     }
 
@@ -330,14 +371,22 @@ public sealed partial class App
         const float a0 = 135, a1 = 405;
         Raylib.DrawRing(center, r - 12 * u, r, a0, a1, 48, new Color(70, 75, 90, 255));
         float kmh = CurrentKmh;
-        float limit = freeRoam ? float.MaxValue : detour != null ? 60 : (float)Game.LegalSpeed;
-        float gaugeMax = freeRoam ? Math.Max(200f, MathF.Ceiling(Math.Abs(kmh) / 100f + 0.3f) * 100) : (float)Game.MaxSpeed;
+        float freeCap = freeRoam && freeSpeedLimit ? FreeSpeedCapKmh(playerKind, freeOnWater) : float.MaxValue;
+        float limit = freeRoam ? freeCap : detour != null ? 60 : (float)Game.LegalSpeed;
+        float gaugeMax = freeRoam
+            ? (freeSpeedLimit
+                ? Math.Max(freeCap <= 100f ? 100f : freeCap <= 300f ? 300f : freeCap <= 500f ? 500f : MathF.Ceiling(freeCap / 200f) * 200f,
+                    MathF.Ceiling(Math.Abs(kmh) / 100f + 0.1f) * 100f)
+                : Math.Max(200f, MathF.Ceiling(Math.Abs(kmh) / 100f + 0.3f) * 100))
+            : (float)Game.MaxSpeed;
         float t = Math.Clamp(Math.Abs(kmh) / gaugeMax, 0f, 1f);
-        Color c = kmh > limit + 20 ? Rgb(255, 80, 60) : kmh > limit ? Rgb(255, 210, 60) : Rgb(80, 200, 255);
+        Color c = freeRoam && freeSpeedLimit
+            ? (Math.Abs(kmh) >= limit - 1f ? Rgb(255, 195, 65) : Rgb(80, 200, 255))
+            : (kmh > limit + 20 ? Rgb(255, 80, 60) : kmh > limit ? Rgb(255, 210, 60) : Rgb(80, 200, 255));
         if (t > 0.002f) Raylib.DrawRing(center, r - 12 * u, r, a0, a0 + (a1 - a0) * t, 48, c);
-        // 制限速度の目盛り
+        // 制限速度／上限速度の目盛り
         float la = (a0 + (a1 - a0) * Math.Min(1, limit / gaugeMax)) * MathF.PI / 180;
-        if (!freeRoam) Raylib.DrawLineEx(center + new Vector2(MathF.Cos(la), MathF.Sin(la)) * (r - 16 * u),
+        if (!freeRoam || freeSpeedLimit) Raylib.DrawLineEx(center + new Vector2(MathF.Cos(la), MathF.Sin(la)) * (r - 16 * u),
             center + new Vector2(MathF.Cos(la), MathF.Sin(la)) * (r + 4 * u), 3 * u, Color.White);
 
         bool hasGearbox = IsGearboxVehicle && !game.OnFerry;
@@ -408,6 +457,8 @@ public sealed partial class App
         }
 
         TextCentered(VehicleName(playerKind), cx, cy + 74 * u, 14, Rgb(255, 220, 150));
+        if (freeRoam && freeSpeedLimit)
+            TextCentered($"上限 {freeCap:0} km/h", cx, cy + (IsFlyer(playerKind) ? 60 : 42) * u, 12, Rgb(255, 205, 110));
         if (freeRoam && IsFlyer(playerKind))
             TextCentered($"高度 {altitude:N0} m", cx, cy + 40 * u, 20, altitude > 0.5f ? Rgb(140, 220, 255) : Sub);
 

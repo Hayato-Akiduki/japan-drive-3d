@@ -120,7 +120,31 @@ public static class MapData
             c.Roads.Sort((x, y) => Bearing(c, x.NextPointFrom(c)).CompareTo(Bearing(c, y.NextPointFrom(c))));
     }
 
-    public static City Get(string name) => ByName[name];
+    public static bool TryGet(string name, out City city)
+    {
+        if (ByName.TryGetValue(name, out var exact))
+        {
+            city = exact;
+            return true;
+        }
+        foreach (var c in Cities)
+        {
+            if (c.Name.Contains(name, StringComparison.Ordinal) || name.Contains(c.Name, StringComparison.Ordinal))
+            {
+                city = c;
+                return true;
+            }
+        }
+        city = ByName["東京"];
+        return false;
+    }
+
+    public static City Get(string name)
+    {
+        if (TryGet(name, out var city)) return city;
+        Console.Error.WriteLine($"未登録の地点 '{name}' のため、東京へフォールバックします。");
+        return city;
+    }
 
     private static double Bearing(City from, (double Lat, double Lon) to)
     {

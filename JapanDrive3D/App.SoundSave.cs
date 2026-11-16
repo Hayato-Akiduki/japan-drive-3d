@@ -23,6 +23,7 @@ public sealed partial class App
         if (Enum.TryParse(save.Vehicle, out VehicleKind kind) && Array.IndexOf(PlayerKinds, kind) >= 0) playerKind = kind;
         Audio.BgmOn = save.Bgm;
         Audio.SfxOn = save.Sfx;
+        if (!demoSpeedLimitSet) freeSpeedLimit = save.FreeSpeedLimit;
     }
 
     private void SaveNow()
@@ -33,6 +34,7 @@ public sealed partial class App
         save.Vehicle = playerKind.ToString();
         save.Bgm = Audio.BgmOn;
         save.Sfx = Audio.SfxOn;
+        save.FreeSpeedLimit = freeSpeedLimit;
         if (freeRoam && free != null && !title)
         {
             save.FreeX = free.PX;
@@ -57,18 +59,44 @@ public sealed partial class App
 
     private void HandleAudioKeys()
     {
-        if (Raylib.IsKeyPressed(KeyboardKey.F2))
+        if (Raylib.IsKeyPressed(KeyboardKey.F2)) ToggleBgm();
+        if (Raylib.IsKeyPressed(KeyboardKey.F3)) ToggleSfx();
+        if (Raylib.IsKeyPressed(KeyboardKey.F4)) ToggleFreeSpeedLimit();
+    }
+
+    private void ToggleBgm()
+    {
+        Audio.BgmOn = !Audio.BgmOn;
+        if (!title) game.AddLog(Audio.BgmOn ? "BGM：ON" : "BGM：OFF");
+        SaveNow();
+    }
+
+    private void ToggleSfx()
+    {
+        Audio.SfxOn = !Audio.SfxOn;
+        if (!title) game.AddLog(Audio.SfxOn ? "効果音：ON" : "効果音：OFF");
+        SaveNow();
+    }
+
+    private void ToggleFreeSpeedLimit()
+    {
+        freeSpeedLimit = !freeSpeedLimit;
+        Audio.Play(Audio.Select, 0.8f);
+        if (!title)
         {
-            Audio.BgmOn = !Audio.BgmOn;
-            if (!title) game.AddLog(Audio.BgmOn ? "BGM：ON" : "BGM：OFF");
-            SaveNow();
+            if (freeRoam)
+            {
+                float cap = FreeSpeedCapKmh(playerKind, freeOnWater);
+                game.AddLog(freeSpeedLimit
+                    ? $"速度上限：ON（{VehicleName(playerKind)} 上限 {cap:0} km/h）"
+                    : "速度上限：OFF（無制限）");
+            }
+            else
+            {
+                game.AddLog(freeSpeedLimit ? "フリーモード速度上限：ON（次回適用）" : "フリーモード速度上限：OFF（無制限）");
+            }
         }
-        if (Raylib.IsKeyPressed(KeyboardKey.F3))
-        {
-            Audio.SfxOn = !Audio.SfxOn;
-            if (!title) game.AddLog(Audio.SfxOn ? "効果音：ON" : "効果音：OFF");
-            SaveNow();
-        }
+        SaveNow();
     }
 
     /// <summary>毎フレーム：エンジン音・足音・BGM・ゲーム中の出来事の音・自動セーブ。</summary>

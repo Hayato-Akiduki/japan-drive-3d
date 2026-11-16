@@ -12,6 +12,7 @@ public sealed class SaveData
     public string Vehicle { get; set; } = nameof(VehicleKind.Sports);
     public bool Bgm { get; set; } = true;
     public bool Sfx { get; set; } = true;
+    public bool FreeSpeedLimit { get; set; }
 
     // 日本一周モードの記録
     public int TourClears { get; set; }
@@ -34,7 +35,11 @@ public sealed class SaveData
         try
         {
             if (File.Exists(FilePath))
-                return JsonSerializer.Deserialize<SaveData>(File.ReadAllText(FilePath), Options) ?? new SaveData();
+            {
+                var data = JsonSerializer.Deserialize<SaveData>(File.ReadAllText(FilePath), Options) ?? new SaveData();
+                data.Stamps ??= new();
+                return data;
+            }
         }
         catch
         {

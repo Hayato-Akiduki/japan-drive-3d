@@ -11,6 +11,7 @@ namespace JapanDrive;
 public sealed partial class App
 {
     private bool freeRoam;
+    private bool freeSpeedLimit;
     private FreeWorld? free;
     private float heading;          // 北=0、東=90（度）
     private float freeKmh;
@@ -211,23 +212,27 @@ public sealed partial class App
         float rpmTarget = 900f + gearRatio * 7500f + (throttle && kmh < 4f ? 650f : 0f);
         engineRpm += (Math.Clamp(rpmTarget, 820f, 9200f) - engineRpm) * Math.Min(1f, dt * 14f);
 
-        bool hasHardCap = !(freeRoam && g == 6); // フリーモード6速はオーバードライブ（最高速無制限）
-        gearCapKmh = hasHardCap ? top : 9999f;
+        float freeCap = freeRoam && freeSpeedLimit ? FreeSpeedCapKmh(playerKind, freeOnWater) : float.MaxValue;
+        bool hasHardCap = !freeRoam || freeSpeedLimit || g != 6; // 無制限時のフリー6速はオーバードライブ（上限なし）
+        float effectiveTop = Math.Min(top, freeCap);
+        gearCapKmh = hasHardCap ? effectiveTop : 9999f;
         engineBrakeDecel = 0f;
 
-        if (hasHardCap && kmh > top + 2.5f)
+        if (hasHardCap && kmh > effectiveTop + 2.5f)
         {
-            // 高速走行中に低いギアへシフトダウンしたときの強烈なエンジンブレーキ＆オーバーレブ
-            revLimiting = true;
+            // 高速走行中に低いギアへシフトダウン、または速度上限到達時の減速
+            revLimiting = kmh > top + 2.5f;
             accelMul = 0f;
-            engineBrakeDecel = 85f + (kmh - top) * 2.0f;
+            engineBrakeDecel = effectiveTop < top
+                ? Math.Max(45f, (kmh - effectiveTop) * 1.4f)
+                : 85f + (kmh - top) * 2.0f;
             return;
         }
 
-        if (hasHardCap && throttle && kmh >= top - 0.6f)
+        if (hasHardCap && throttle && kmh >= effectiveTop - 0.6f)
         {
-            // レブリミッター作動（シフトアップするまで頭打ち）
-            revLimiting = true;
+            // レブリミッターまたは速度リミッター作動
+            revLimiting = effectiveTop >= top - 0.5f;
             accelMul = 0f;
             return;
         }
@@ -258,6 +263,7 @@ public sealed partial class App
 
     private void StartFree()
     {
+        free?.Dispose();
         free = new FreeWorld(scene);
         var city = MapData.Get(demoAt ?? "東京");
         (free.PX, free.PZ) = FreeWorld.CityPos(city);
@@ -269,6 +275,13 @@ public sealed partial class App
             free.PX = save.FreeX!.Value;
             free.PZ = save.FreeZ!.Value;
             heading = save.FreeHeading;
+        }
+        else if (demoLatLon == null)
+        {
+            var safe = free.FindSafeRoadSpawn(free.PX, free.PZ);
+            free.PX = safe.X;
+            free.PZ = safe.Z;
+            if (!demoHeadingSet) heading = safe.Heading;
         }
         free.UpdateNear();
         freeKmh = 0;
@@ -285,10 +298,35 @@ public sealed partial class App
         animDist = 0;
         waypoint = null;
         game.Log.Clear();
+        string limitNote = freeSpeedLimit
+            ? $"速度上限：ON（{VehicleName(playerKind)} 上限 {FreeSpeedCapKmh(playerKind, freeOnWater):0} km/h・F4で解除）"
+            : "速度制限なし（F4でリアル上限ON）";
         game.AddLog(resume
-            ? $"フリーモード：前回の続き（{free.NearestPlace(free.PX, free.PZ).Name}付近）から再開しました。"
-            : $"フリーモード：{free.NearestPlace(free.PX, free.PZ).Name}から出発。道路も海も、日本中どこでも自由に走れます（速度制限なし）。");
+            ? $"フリーモード：前回の続き（{free.NearestPlace(free.PX, free.PZ).Name}付近）から再開しました（{limitNote}）。"
+            : $"フリーモード：{free.NearestPlace(free.PX, free.PZ).Name}から出発。{limitNote}。");
         game.AddLog("各地の名所に近づくとスタンプがもらえます。M の地図でクリックした場所へワープもできます。");
+    }
+
+    private static float FreeSpeedCapKmh(VehicleKind kind, bool onWater)
+    {
+        if (onWater && !IsFlyer(kind))
+            return kind == VehicleKind.Amphibious ? 45f : 30f;
+        return kind switch
+        {
+            VehicleKind.Sports => 280f,
+            VehicleKind.Sedan => 180f,
+            VehicleKind.Minivan => 170f,
+            VehicleKind.Kei => 140f,
+            VehicleKind.Truck => 110f,
+            VehicleKind.Tank => 70f,
+            VehicleKind.Amphibious => 72f,
+            VehicleKind.Horse => 70f,
+            VehicleKind.Hikyaku => 35f,
+            VehicleKind.Helicopter => 280f,
+            VehicleKind.Airplane => 450f,
+            VehicleKind.Fighter => 2400f,
+            _ => 180f,
+        };
     }
 
     private static float Accel(VehicleKind k) => k switch
@@ -335,6 +373,8 @@ public sealed partial class App
         float surface = f.SurfaceY(f.PX, f.PZ);
         float ground = flyer ? Math.Max(surface, f.RoofY(f.PX, f.PZ)) : surface;
         bool airborne = flyer ? freeY > ground + 0.5f : carAir;
+        bool road = f.OnRoad(f.PX, f.PZ);
+        bool water = !road && f.IsInWater(f.PX, f.PZ);
 
         UpdateTransmission(dt, freeKmh, up, out float accelMul, out float engineBrakeDecel, out float gearCapKmh);
 
@@ -344,11 +384,12 @@ public sealed partial class App
             if (manualGear == -1)
             {
                 // R（リバース）ギア：アクセル（↑/W）または↓/Sで力強くバック、前進中なら急制動
+                float revCap = freeSpeedLimit ? Math.Min(44f, FreeSpeedCapKmh(playerKind, water) * 0.55f) : 44f;
                 if (up || down)
                 {
                     freeKmh = freeKmh > 0.5f
                         ? Math.Max(0, freeKmh - 165 * dt)
-                        : Math.Max(-44f, freeKmh - Accel(playerKind) * 0.85f * dt);
+                        : Math.Max(-revCap, freeKmh - Accel(playerKind) * 0.85f * dt);
                 }
                 else
                 {
@@ -390,10 +431,18 @@ public sealed partial class App
         }
         else
         {
-            // AT（または航空機・馬など）：速度制限なし、踏み続けるほど速くなる
-            if (up) freeKmh += Accel(playerKind) * (1 + Math.Max(0, freeKmh) / 500f) * dt;
+            // AT（または航空機・馬など）：速度上限設定に応じて無制限または現実的上限で加速
+            float cap = freeSpeedLimit ? FreeSpeedCapKmh(playerKind, water) : float.MaxValue;
+            float revCap = freeSpeedLimit ? Math.Min(30f, cap * 0.5f) : 30f;
+            if (freeSpeedLimit && freeKmh > cap)
+                freeKmh = Math.Max(cap, freeKmh - Math.Max(45f, (freeKmh - cap) * 1.4f) * dt);
+            else if (up)
+            {
+                float nextKmh = freeKmh + Accel(playerKind) * (1 + Math.Max(0, freeKmh) / 500f) * dt;
+                freeKmh = Math.Min(cap, nextKmh);
+            }
             else if (down && airborne) freeKmh = Math.Max(0, freeKmh - 60 * dt);   // 空中ではバックしない
-            else if (down) freeKmh = freeKmh > 0 ? Math.Max(0, freeKmh - 140 * dt) : Math.Max(-30, freeKmh - 20 * dt);
+            else if (down) freeKmh = freeKmh > 0 ? Math.Max(0, freeKmh - 140 * dt) : Math.Max(-revCap, freeKmh - 20 * dt);
             else
             {
                 freeKmh -= freeKmh * 0.12f * dt;
@@ -401,8 +450,6 @@ public sealed partial class App
             }
         }
 
-        bool road = f.OnRoad(f.PX, f.PZ);
-        bool water = !road && f.IsInWater(f.PX, f.PZ);
         if (water && !airborne && playerKind != VehicleKind.Amphibious && !flyer)
             freeKmh = Math.Clamp(freeKmh, -15, 30); // 水の中はゆっくり
 
@@ -654,7 +701,7 @@ public sealed partial class App
 
         game.SetClock(game.GameMinutes + dt);
         f.UpdateNear();
-        f.UpdateTraffic(dt);
+        f.UpdateTraffic(dt, time);
 
         // ほかの車にぶつかったらはね飛ばす
         if (crashCooldown <= 0 && Math.Abs(ms) > 2 && !water && freeY - surface < 2)
@@ -739,7 +786,7 @@ public sealed partial class App
         }
         if (Raylib.IsKeyPressed(KeyboardKey.N))
         {
-            if (resetConfirm > 0) { SaveNow(); title = true; titleTime = 0; freeRoam = false; }
+            if (resetConfirm > 0) { SaveNow(); free?.Dispose(); free = null; title = true; titleTime = 0; freeRoam = false; }
             else
             {
                 resetConfirm = 2.5f;
@@ -1200,17 +1247,83 @@ public sealed partial class App
             Text(label, sp.X - m.X / 2, sp.Y, 14, Rgb(140, 235, 255));
         }
 
+        // 主要交差点・都市街路の信号機名板に交差点名を重ね描き
+        float focal = sh / 2f / MathF.Tan(camera.FovY * MathF.PI / 360f);
+        foreach (var plq in f.IntersectionPlaques)
+        {
+            var toCam = camera.Position - plq.Pos;
+            if (Vector3.Dot(toCam, plq.OutNormal) <= 0.1f) continue;
+            var rel = plq.Pos - camera.Position;
+            if (Vector3.Dot(rel, look) <= 1.5f) continue;
+            var sp = Raylib.GetWorldToScreen(plq.Pos, camera);
+            if (sp.X < -80 || sp.X > sw + 80 || sp.Y < -40 || sp.Y > sh + 40) continue;
+            float fontPx = Math.Clamp(0.36f * plq.Scale * focal / Math.Max(4f, plq.Dist), 5f, 30f * u);
+            var pm = Raylib.MeasureTextEx(Draw.Font, plq.Text, fontPx, 0);
+            float maxW = 1.76f * plq.Scale * focal / Math.Max(4f, plq.Dist);
+            if (pm.X > maxW && pm.X > 1f)
+            {
+                fontPx *= maxW / pm.X;
+                pm = Raylib.MeasureTextEx(Draw.Font, plq.Text, fontPx, 0);
+            }
+            if (fontPx < 4.5f) continue;
+            byte alpha = (byte)Math.Clamp(255f * (1f - (plq.Dist - 105f) / 65f), 0f, 255f);
+            Raylib.DrawTextEx(Draw.Font, plq.Text, new Vector2(sp.X - pm.X * 0.5f, sp.Y - pm.Y * 0.5f), fontPx, 0, new Color((byte)20, (byte)48, (byte)108, alpha));
+        }
+
+        // 青看（方面案内標識）に方面テキストを重ね描き
+        foreach (var bs in f.BlueSignLabels)
+        {
+            var toCam = camera.Position - bs.Pos;
+            if (Vector3.Dot(toCam, bs.OutNormal) <= 0.1f) continue;
+            var rel = bs.Pos - camera.Position;
+            if (Vector3.Dot(rel, look) <= 1.5f) continue;
+            var sp = Raylib.GetWorldToScreen(bs.Pos, camera);
+            if (sp.X < -140 || sp.X > sw + 140 || sp.Y < -80 || sp.Y > sh + 80) continue;
+            byte alpha = (byte)Math.Clamp(255f * (1f - (bs.Dist - 110f) / 60f), 0f, 255f);
+            if (alpha < 10) continue;
+            float pxTop = Math.Clamp(0.42f * focal / Math.Max(6f, bs.Dist), 6f, 28f * u);
+            float pxBot = Math.Clamp(0.32f * focal / Math.Max(6f, bs.Dist), 5f, 22f * u);
+            float boardW = 2.68f * focal / Math.Max(6f, bs.Dist);
+            float boardH = 1.58f * focal / Math.Max(6f, bs.Dist);
+            var mTop = Raylib.MeasureTextEx(Draw.Font, bs.TopText, pxTop, 0);
+            if (mTop.X > boardW && mTop.X > 1f) { pxTop *= boardW / mTop.X; mTop = Raylib.MeasureTextEx(Draw.Font, bs.TopText, pxTop, 0); }
+            var mBot = Raylib.MeasureTextEx(Draw.Font, bs.BottomText, pxBot, 0);
+            if (mBot.X > boardW && mBot.X > 1f) { pxBot *= boardW / mBot.X; mBot = Raylib.MeasureTextEx(Draw.Font, bs.BottomText, pxBot, 0); }
+            if (pxTop < 5.5f) continue;
+            float padX = 5f * u, padY = 2f * u;
+            Color bg = new Color((byte)10, (byte)76, (byte)162, (byte)(alpha * 225 / 255));
+            Color fg = new Color((byte)248, (byte)250, (byte)255, alpha);
+            float topY = sp.Y - boardH * 0.16f;
+            float botY = sp.Y + boardH * 0.22f;
+            Raylib.DrawRectangleRounded(new Rectangle(sp.X - mTop.X * 0.5f - padX, topY - mTop.Y * 0.5f - padY, mTop.X + padX * 2, mTop.Y + padY * 2), 0.2f, 4, bg);
+            Raylib.DrawTextEx(Draw.Font, bs.TopText, new Vector2(sp.X - mTop.X * 0.5f, topY - mTop.Y * 0.5f), pxTop, 0, fg);
+            Raylib.DrawRectangleRounded(new Rectangle(sp.X - mBot.X * 0.5f - padX, botY - mBot.Y * 0.5f - padY, mBot.X + padX * 2, mBot.Y + padY * 2), 0.2f, 4, bg);
+            Raylib.DrawTextEx(Draw.Font, bs.BottomText, new Vector2(sp.X - mBot.X * 0.5f, botY - mBot.Y * 0.5f), pxBot, 0, fg);
+        }
+
         // 左上：状況
         var (near, nd) = f.NearestPlace(f.PX, f.PZ);
-        Panel(16 * u, 16 * u, 430 * u, 150 * u);
-        float x = 32 * u, y = 28 * u;
+        var nav = f.GetRoadNavSummary(f.PX, f.PZ, heading);
+        Panel(16 * u, 16 * u, 460 * u, 176 * u);
+        float x = 32 * u, y = 26 * u;
         Text(Game.FormatClock(game.GameMinutes), x, y, 22, Orange);
-        y += 32 * u;
-        Text("フリーモード（道路も速度も自由）", x, y, 18, Color.White);
-        y += 28 * u;
+        float capNow = FreeSpeedCapKmh(playerKind, freeOnWater);
+        string limitBadge = freeSpeedLimit ? $"F4 速度上限：{capNow:0} km/h" : "F4 速度上限：OFF";
+        var bm = Measure(limitBadge, 13);
+        Panel(16 * u + 444 * u - bm.X - 14 * u, y + 1 * u, bm.X + 14 * u, 23 * u,
+            freeSpeedLimit ? new Color(165, 95, 20, 220) : new Color(35, 55, 85, 200));
+        Text(limitBadge, 16 * u + 444 * u - bm.X - 7 * u, y + 4 * u, 13,
+            freeSpeedLimit ? Rgb(255, 225, 130) : Sub);
+        y += 30 * u;
+        Text(freeSpeedLimit ? "フリーモード（リアル速度上限 ON）" : "フリーモード（道路も速度も自由）", x, y, 18, Color.White);
+        y += 26 * u;
         string elevText = IsFlyer(playerKind) && altitude > 0.5f ? "" : $"　標高 {Math.Max(0, groundLevel) / FreeWorld.VScale:N0} m";
         Text($"{near}付近（{nd / 1000:0.0} km）　向き：{Compass(heading)}{elevText}", x, y, 15, Rgb(220, 225, 235));
-        y += 26 * u;
+        y += 24 * u;
+        string navLine = $"{nav.RoadLabel}{(nav.OnSidewalk ? "（歩道）" : "")}"
+            + (nav.AheadLabel != null && nav.AheadDist is double ad ? $"　→ {nav.AheadLabel} ({ad:0}m)" : "");
+        Text(FitText(navLine, 14, 428 * u), x, y, 14, nav.OnSidewalk ? Rgb(255, 215, 130) : Rgb(145, 225, 255));
+        y += 24 * u;
         Text($"名所スタンプ {stamps.Count}/{Spots.All.Count}（B：スタンプ帳）{(destroyed > 0 ? $"　撃破 {destroyed}" : "")}", x, y, 15, Rgb(255, 200, 200));
 
         DrawMiniMap(sw - 316 * u, 16 * u, 300 * u);
@@ -1220,20 +1333,34 @@ public sealed partial class App
         DrawCrosshair(u);
 
         string help = playerKind == VehicleKind.Helicopter
-            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降　マウス・Z/X 照準　左クリック・Ctrl長押し 機関銃　V 乗り物　M 地図　B スタンプ帳　C 視点"
+            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降　マウス・Z/X 照準　左クリック・Ctrl長押し 機関銃　V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点"
             : playerKind == VehicleKind.Fighter
-            ? "↑↓ 加速/減速　←→ 旋回　Space 上昇（150km/h〜）　Shift 下降　左クリック・Ctrl 爆弾投下　V 乗り物　M 地図　B スタンプ帳　C 視点"
+            ? "↑↓ 加速/減速　←→ 旋回　Space 上昇（150km/h〜）　Shift 下降　左クリック・Ctrl 爆弾投下　V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点"
             : IsFlyer(playerKind)
-            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降（140km/h 以上で離陸）　V 乗り物　M 地図・ワープ　B スタンプ帳　C 視点"
+            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降（140km/h 以上で離陸）　V 乗り物　M 地図・ワープ　F4 速度上限　B スタンプ帳　C 視点"
             : playerKind == VehicleKind.Tank
-            ? "↑↓ 前進/後退　←→ ハンドル　H AT/MT切替(Q/E・Shift・ホイール ギア)　マウス・Z/X 砲塔　左クリック・Ctrl 発射　V 乗り物　M 地図"
-            : "↑↓ アクセル/ブレーキ　←→ ハンドル　Space ドリフト　H AT/MT切替（E/Shift シフトUP・Q/Ctrl シフトDOWN）　V 乗り物　M 地図　B スタンプ帳　C 視点";
+            ? "↑↓ 前進/後退　←→ ハンドル　H AT/MT切替(Q/E・Shift・ホイール ギア)　マウス・Z/X 砲塔　左クリック・Ctrl 発射　V 乗り物　M 地図　F4 速度上限"
+            : "↑↓ アクセル/ブレーキ　←→ ハンドル　Space ドリフト　H AT/MT切替（E/Shift シフトUP・Q/Ctrl シフトDOWN）　V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点";
         var hm = Measure(help, 13);
         Text(help, (sw - hm.X) / 2, sh - 24 * u, 13, new Color(255, 255, 255, 170));
 
         DrawStampPopup(sw, sh, u);
         if (bigMap) DrawBigMap(sw, sh, u);
         if (stampBook) DrawStampBook(sw, sh, u);
+    }
+
+    private static string FitText(string text, float size, float maxWidth)
+    {
+        if (Measure(text, size).X <= maxWidth) return text;
+        const string ell = "…";
+        int lo = 0, hi = text.Length;
+        while (lo < hi)
+        {
+            int mid = (lo + hi + 1) / 2;
+            if (Measure(text[..mid] + ell, size).X <= maxWidth) lo = mid;
+            else hi = mid - 1;
+        }
+        return lo > 0 ? text[..lo] + ell : ell;
     }
 
     /// <summary>目的地（なければ一番近い未取得の名所）の方向を矢印で案内する。</summary>

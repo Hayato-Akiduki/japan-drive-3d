@@ -142,7 +142,8 @@ public sealed partial class App
                 VehicleKind.Fighter => "（超音速ジェット！ 150km/h 以上で Space 離陸、左クリック・Ctrl で爆弾投下！）",
                 _ => "",
             };
-            game.AddLog($"{VehicleName(next)}に乗り換えました{extra}");
+            string limitHint = freeRoam && freeSpeedLimit ? $" [上限 {FreeSpeedCapKmh(next, false):0} km/h]" : "";
+            game.AddLog($"{VehicleName(next)}に乗り換えました{extra}{limitHint}");
         });
     }
 

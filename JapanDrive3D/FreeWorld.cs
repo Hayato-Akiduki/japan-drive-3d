@@ -11,11 +11,15 @@ public sealed class FreeCar
     public int Seg;
     public double T;
     public int Dir;
-    public float Lane, Speed, Dist;
+    public float Lane, Speed, CurSpeed, Dist;
     public Color Color;
     public VehicleKind Kind;
     public double X, Z;
     public float Heading;
+    public bool OnStreet;
+    public long StreetKx, StreetKz;
+    public int StreetDx, StreetDz;
+    public double StreetFrac;
     public bool Flying;
     public float Y, Vy, Vx, Vz, Roll, Spin, FlyTime;
 }
@@ -319,7 +323,7 @@ public static class LandRaster
 /// 山は実際の位置と標高（高さは実際の 0.12 倍）で地形になっていて、登ったりぶつかったりできる。
 /// 描画はプレイヤー位置を原点にする（遠くまで走っても精度が落ちない）。
 /// </summary>
-public sealed class FreeWorld
+public sealed class FreeWorld : IDisposable
 {
     public const double M = 7500;
     public const float VScale = 0.12f;         // 実際の標高 → ゲームの高さ
@@ -420,18 +424,317 @@ public sealed class FreeWorld
         public required float MaxHalfW;
     }
 
+    private readonly record struct BakedQuad(
+        double X0, float Y0, double Z0,
+        double X1, float Y1, double Z1,
+        double X2, float Y2, double Z2,
+        double X3, float Y3, double Z3,
+        Color Col, bool Lit);
+
+    private readonly record struct BakedTri(
+        double X0, float Y0, double Z0,
+        double X1, float Y1, double Z1,
+        double X2, float Y2, double Z2,
+        Color Col, bool Lit);
+
+    private readonly record struct BakedBeacon(double X, float Y, double Z, bool Phase);
+    private readonly record struct BakedSpire(double X, float Y0, float Y1, double Z);
+
+    private readonly record struct StreetPropNode(
+        double X, double Z, long Kx, long Kz,
+        bool HasN, bool HasS, bool HasE, bool HasW, bool MajorCross);
+
+    public readonly record struct PlaqueLabel(Vector3 Pos, string Text, Vector3 OutNormal, float Scale, float Dist);
+    public readonly record struct BlueSignLabel(Vector3 Pos, string TopText, string BottomText, Vector3 OutNormal, float Dist);
+
+    private sealed class StreetChunk
+    {
+        public double OriginX, OriginZ;
+        public long Kx0, Kz0;
+        public bool HasStreets;
+        public bool[,] HGrid = new bool[0, 0];
+        public bool[,] VGrid = new bool[0, 0];
+        public StreetPropNode[] Props = Array.Empty<StreetPropNode>();
+        public List<BakedQuad>? PendingQuads;
+        public Mesh[]? Meshes;
+    }
+
+    private sealed class CityChunk
+    {
+        public double OriginX, OriginZ;
+        public readonly List<Block> Blocks = new();
+        public readonly Mesh[]?[] LodMeshes = new Mesh[]?[4];
+        public readonly BakedBeacon[]?[] LodBeacons = new BakedBeacon[]?[4];
+        public readonly BakedSpire[]?[] LodSpires = new BakedSpire[]?[4];
+        public bool BuiltNight;
+        public int BuiltDestroyedCount = -1;
+    }
+
+    private readonly record struct GroundGridVert(double Wx, double Wz, float H, Color Col);
+
+    private const double RoadBucketSize = 2000.0;
+    private const double RoadBucketPad = 1350.0;
+    private const double ChunkWorldSize = 4 * CityCell * 2; // 352m
+
     private readonly List<Seg> segs = new();
     private readonly List<CurveJoint> curves = new();
     private readonly List<Junction> junctions = new();
+    private readonly Dictionary<(int, int), List<int>> roadSegBuckets = new();
+    private readonly Dictionary<(int, int), List<int>> roadJctBuckets = new();
     private readonly List<Peak> peaks = new();
     private readonly List<AirportInfo> airports = new();
     private readonly List<RoofTri> roofTris = new(512);
     private readonly List<RoofBeacon> roofBeacons = new(128);
     private readonly List<RoofSpire> roofSpires = new(128);
+    public List<PlaqueLabel> IntersectionPlaques { get; } = new(32);
+    public List<BlueSignLabel> BlueSignLabels { get; } = new(32);
+    private int evictFrameCounter;
     private readonly List<RiverRibbon> rivers = new();
+    private readonly Dictionary<(long, long), StreetChunk> streetChunks = new();
+    private readonly Dictionary<(long, long), bool> streetNodeClearCache = new();
+    private readonly Dictionary<(long, long, bool), bool> streetEdgeRawCache = new();
+    private readonly Dictionary<(long, long), CityChunk> cityChunks = new();
+    private readonly HashSet<Place> indexedCityPlaces = new();
+    private Shader chunkShader;
+    private Material chunkMat;
+    private bool chunkShaderReady;
+    private int locChunkOffset, locCamPos, locLight, locFogColor, locFogStart, locFogSpan;
+    private readonly List<BakedQuad> bakeQuads = new(256);
+    private readonly List<BakedTri> bakeTris = new(32);
+    private readonly List<BakedBeacon> bakeBeacons = new(8);
+    private readonly List<BakedSpire> bakeSpires = new(4);
+    private readonly (double X, float Y, double Z, Color Col, bool Lit)[] qvBuf = new (double, float, double, Color, bool)[4];
+    private int qvCount;
+    private bool bakingBlock;
+    private int cachedGroundLvl = -1, cachedGroundN = -1;
+    private long cachedGroundCx, cachedGroundCz;
+    private GroundGridVert[] cachedGroundVerts = Array.Empty<GroundGridVert>();
+    private float[] cachedGroundH = Array.Empty<float>();
     private List<int> nearSegs = new();
     private readonly Dictionary<(long, long, int), float> heightCache = new();
     private float drawTime;
+
+    public void Dispose()
+    {
+        foreach (var sc in streetChunks.Values)
+        {
+            if (sc.Meshes != null)
+                foreach (var m in sc.Meshes)
+                    Raylib.UnloadMesh(m);
+            sc.Meshes = null;
+            sc.PendingQuads = null;
+        }
+        streetChunks.Clear();
+
+        foreach (var cc in cityChunks.Values)
+        {
+            for (int li = 0; li < 4; li++)
+            {
+                var ms = cc.LodMeshes[li];
+                if (ms != null)
+                    foreach (var m in ms)
+                        Raylib.UnloadMesh(m);
+                cc.LodMeshes[li] = null;
+            }
+        }
+        cityChunks.Clear();
+
+        if (chunkShaderReady)
+        {
+            Raylib.UnloadShader(chunkShader);
+            chunkShaderReady = false;
+        }
+    }
+
+    private void EvictFarChunkMeshes()
+    {
+        if (++evictFrameCounter < 90 && streetChunks.Count <= 140 && cityChunks.Count <= 140) return;
+        evictFrameCounter = 0;
+        double evictDist = Math.Max(2200.0, ViewRadius + 1000.0);
+        double evictD2 = evictDist * evictDist;
+
+        if (streetChunks.Count > 100)
+        {
+            var stale = new List<(long, long)>();
+            foreach (var (key, sc) in streetChunks)
+            {
+                double dx = sc.OriginX - PX, dz = sc.OriginZ - PZ;
+                if (dx * dx + dz * dz > evictD2)
+                    stale.Add(key);
+            }
+            foreach (var key in stale)
+            {
+                var sc = streetChunks[key];
+                if (sc.Meshes != null)
+                    foreach (var m in sc.Meshes)
+                        Raylib.UnloadMesh(m);
+                streetChunks.Remove(key);
+            }
+        }
+
+        if (cityChunks.Count > 100)
+        {
+            foreach (var cc in cityChunks.Values)
+            {
+                double dx = cc.OriginX - PX, dz = cc.OriginZ - PZ;
+                if (dx * dx + dz * dz <= evictD2) continue;
+                for (int li = 0; li < 4; li++)
+                {
+                    var ms = cc.LodMeshes[li];
+                    if (ms == null) continue;
+                    foreach (var m in ms)
+                        Raylib.UnloadMesh(m);
+                    cc.LodMeshes[li] = null;
+                    cc.LodBeacons[li] = null;
+                    cc.LodSpires[li] = null;
+                }
+            }
+        }
+
+        if (streetNodeClearCache.Count > 120000) streetNodeClearCache.Clear();
+        if (streetEdgeRawCache.Count > 120000) streetEdgeRawCache.Clear();
+    }
+
+    private void EnsureChunkShader()
+    {
+        if (chunkShaderReady) return;
+        chunkShaderReady = true;
+        const string vs = """
+            #version 330
+            in vec3 vertexPosition;
+            in vec2 vertexTexCoord;
+            in vec4 vertexColor;
+            uniform mat4 mvp;
+            uniform vec3 uChunkOffset;
+            uniform vec3 uCamPos;
+            uniform float uLight;
+            uniform vec3 uFogColor;
+            uniform float uFogStart;
+            uniform float uFogSpan;
+            out vec4 fragColor;
+            void main()
+            {
+                vec3 wp = vertexPosition + uChunkOffset;
+                gl_Position = mvp * vec4(wp, 1.0);
+                float dist = length(wp - uCamPos);
+                float f = clamp((dist - uFogStart) / uFogSpan, 0.0, 1.0);
+                f = f * f * (3.0 - 2.0 * f);
+                vec3 baseCol = vertexColor.rgb * mix(uLight, 1.0, vertexTexCoord.x);
+                fragColor = vec4(mix(baseCol, uFogColor, f), vertexColor.a);
+            }
+            """;
+        const string fs = """
+            #version 330
+            in vec4 fragColor;
+            out vec4 finalColor;
+            void main()
+            {
+                finalColor = fragColor;
+            }
+            """;
+        chunkShader = Raylib.LoadShaderFromMemory(vs, fs);
+        chunkMat = Raylib.LoadMaterialDefault();
+        chunkMat.Shader = chunkShader;
+        locChunkOffset = Raylib.GetShaderLocation(chunkShader, "uChunkOffset");
+        locCamPos = Raylib.GetShaderLocation(chunkShader, "uCamPos");
+        locLight = Raylib.GetShaderLocation(chunkShader, "uLight");
+        locFogColor = Raylib.GetShaderLocation(chunkShader, "uFogColor");
+        locFogStart = Raylib.GetShaderLocation(chunkShader, "uFogStart");
+        locFogSpan = Raylib.GetShaderLocation(chunkShader, "uFogSpan");
+    }
+
+    private void BeginChunkShaderPass()
+    {
+        EnsureChunkShader();
+        float k = scene.FogScale;
+        float fogStart = 80f * k;
+        float fogSpan = Math.Max(1f, (Scene.ViewAhead - 80f) * k);
+        Color fog = scene.FogColor;
+        var fogVec = new Vector3(fog.R / 255f, fog.G / 255f, fog.B / 255f);
+        Raylib.SetShaderValue(chunkShader, locCamPos, cam, ShaderUniformDataType.Vec3);
+        Raylib.SetShaderValue(chunkShader, locLight, scene.LightLevel, ShaderUniformDataType.Float);
+        Raylib.SetShaderValue(chunkShader, locFogColor, fogVec, ShaderUniformDataType.Vec3);
+        Raylib.SetShaderValue(chunkShader, locFogStart, fogStart, ShaderUniformDataType.Float);
+        Raylib.SetShaderValue(chunkShader, locFogSpan, fogSpan, ShaderUniformDataType.Float);
+    }
+
+    private void DrawChunkMeshes(double originX, double originZ, Mesh[] meshes)
+    {
+        if (meshes.Length == 0) return;
+        var offset = new Vector3((float)(-(originX - PX)), 0f, (float)(originZ - PZ));
+        Raylib.SetShaderValue(chunkShader, locChunkOffset, offset, ShaderUniformDataType.Vec3);
+        for (int i = 0; i < meshes.Length; i++)
+            Raylib.DrawMesh(meshes[i], chunkMat, Matrix4x4.Identity);
+    }
+
+    private static Mesh[] BuildChunkMeshes(double originX, double originZ, List<BakedQuad> quads, List<BakedTri> tris)
+    {
+        if (quads.Count == 0 && tris.Count == 0) return Array.Empty<Mesh>();
+        const int maxVertsPerMesh = 60000;
+        var list = new List<Mesh>(2);
+        int qi = 0, ti = 0;
+        while (qi < quads.Count || ti < tris.Count)
+        {
+            int qStart = qi, tStart = ti;
+            int verts = 0, triCount = 0;
+            while (qi < quads.Count && verts + 4 <= maxVertsPerMesh)
+            {
+                verts += 4;
+                triCount += 2;
+                qi++;
+            }
+            while (ti < tris.Count && verts + 3 <= maxVertsPerMesh)
+            {
+                verts += 3;
+                triCount += 1;
+                ti++;
+            }
+
+            var mesh = new Mesh(verts, triCount);
+            mesh.AllocVertices();
+            mesh.AllocTexCoords();
+            mesh.AllocColors();
+            mesh.AllocIndices();
+            var mv = mesh.VerticesAs<Vector3>();
+            var mu = mesh.TexCoordsAs<Vector2>();
+            var mc = mesh.ColorsAs<Color>();
+            var mi = mesh.IndicesAs<ushort>();
+
+            int vo = 0, io = 0;
+            for (int k = qStart; k < qi; k++)
+            {
+                var q = quads[k];
+                mv[vo + 0] = new Vector3((float)(-(q.X0 - originX)), q.Y0, (float)(q.Z0 - originZ));
+                mv[vo + 1] = new Vector3((float)(-(q.X1 - originX)), q.Y1, (float)(q.Z1 - originZ));
+                mv[vo + 2] = new Vector3((float)(-(q.X2 - originX)), q.Y2, (float)(q.Z2 - originZ));
+                mv[vo + 3] = new Vector3((float)(-(q.X3 - originX)), q.Y3, (float)(q.Z3 - originZ));
+                var uv = new Vector2(q.Lit ? 1f : 0f, 0f);
+                mu[vo + 0] = uv; mu[vo + 1] = uv; mu[vo + 2] = uv; mu[vo + 3] = uv;
+                mc[vo + 0] = q.Col; mc[vo + 1] = q.Col; mc[vo + 2] = q.Col; mc[vo + 3] = q.Col;
+                ushort b = (ushort)vo;
+                mi[io++] = b; mi[io++] = (ushort)(b + 1); mi[io++] = (ushort)(b + 2);
+                mi[io++] = b; mi[io++] = (ushort)(b + 2); mi[io++] = (ushort)(b + 3);
+                vo += 4;
+            }
+            for (int k = tStart; k < ti; k++)
+            {
+                var t = tris[k];
+                mv[vo + 0] = new Vector3((float)(-(t.X0 - originX)), t.Y0, (float)(t.Z0 - originZ));
+                mv[vo + 1] = new Vector3((float)(-(t.X1 - originX)), t.Y1, (float)(t.Z1 - originZ));
+                mv[vo + 2] = new Vector3((float)(-(t.X2 - originX)), t.Y2, (float)(t.Z2 - originZ));
+                var uv = new Vector2(t.Lit ? 1f : 0f, 0f);
+                mu[vo + 0] = uv; mu[vo + 1] = uv; mu[vo + 2] = uv;
+                mc[vo + 0] = t.Col; mc[vo + 1] = t.Col; mc[vo + 2] = t.Col;
+                ushort b = (ushort)vo;
+                mi[io++] = b; mi[io++] = (ushort)(b + 1); mi[io++] = (ushort)(b + 2);
+                vo += 3;
+            }
+
+            Raylib.UploadMesh(ref mesh, false);
+            list.Add(mesh);
+        }
+        return list.ToArray();
+    }
 
     public List<Place> Places { get; } = new();
     public Dictionary<Spot, (double X, double Z)> SpotPos { get; } = new();
@@ -506,8 +809,51 @@ public sealed class FreeWorld
             Places.Add(new Place { Name = name, X = x, Z = z, Tier = tier, Radius = TierRadius(tier) });
         }
         _ = LandRaster.Land(0, 0);   // 地図を先に作っておく
+        BuildRoadSpatialIndex();
         PlaceSpots();
         BuildRivers();
+    }
+
+    private void BuildRoadSpatialIndex()
+    {
+        roadSegBuckets.Clear();
+        roadJctBuckets.Clear();
+        static int BucketCoord(double v) => (int)Math.Floor(v / RoadBucketSize);
+        for (int si = 0; si < segs.Count; si++)
+        {
+            var s = segs[si];
+            int bx0 = BucketCoord(Math.Min(s.Ax, s.Bx) - RoadBucketPad);
+            int bx1 = BucketCoord(Math.Max(s.Ax, s.Bx) + RoadBucketPad);
+            int bz0 = BucketCoord(Math.Min(s.Az, s.Bz) - RoadBucketPad);
+            int bz1 = BucketCoord(Math.Max(s.Az, s.Bz) + RoadBucketPad);
+            for (int bx = bx0; bx <= bx1; bx++)
+            {
+                for (int bz = bz0; bz <= bz1; bz++)
+                {
+                    var key = (bx, bz);
+                    if (!roadSegBuckets.TryGetValue(key, out var list))
+                        roadSegBuckets[key] = list = new List<int>(4);
+                    list.Add(si);
+                }
+            }
+        }
+        for (int ji = 0; ji < junctions.Count; ji++)
+        {
+            var j = junctions[ji];
+            double r = j.Radius + RoadBucketPad;
+            int bx0 = BucketCoord(j.X - r), bx1 = BucketCoord(j.X + r);
+            int bz0 = BucketCoord(j.Z - r), bz1 = BucketCoord(j.Z + r);
+            for (int bx = bx0; bx <= bx1; bx++)
+            {
+                for (int bz = bz0; bz <= bz1; bz++)
+                {
+                    var key = (bx, bz);
+                    if (!roadJctBuckets.TryGetValue(key, out var list))
+                        roadJctBuckets[key] = list = new List<int>(2);
+                    list.Add(ji);
+                }
+            }
+        }
     }
 
     private void BuildJunctions(Dictionary<City, List<(int SegIdx, bool IsA)>> citySegArms)
@@ -624,6 +970,29 @@ public sealed class FreeWorld
         return best;
     }
 
+    private double FastRoadDistance(double x, double z, double maxQuery)
+    {
+        if (maxQuery > RoadBucketPad || (roadSegBuckets.Count == 0 && roadJctBuckets.Count == 0))
+            return RoadDistance(x, z);
+        double best = AirportDistance(x, z);
+        var key = ((int)Math.Floor(x / RoadBucketSize), (int)Math.Floor(z / RoadBucketSize));
+        if (roadSegBuckets.TryGetValue(key, out var sList))
+        {
+            foreach (int si in sList)
+                best = Math.Min(best, SegDistance(segs[si], x, z, out _));
+        }
+        if (roadJctBuckets.TryGetValue(key, out var jList))
+        {
+            foreach (int ji in jList)
+            {
+                var j = junctions[ji];
+                double dj = Math.Sqrt((x - j.X) * (x - j.X) + (z - j.Z) * (z - j.Z)) - (j.Radius - 8);
+                if (dj < best) best = Math.Max(0, dj);
+            }
+        }
+        return best;
+    }
+
     private double DistanceToRoadSet(double x, double z, List<int> segIndices)
     {
         double best = AirportDistance(x, z);
@@ -649,7 +1018,7 @@ public sealed class FreeWorld
 
     private double NearRoadDistance(double x, double z) => DistanceToRoadSet(x, z, nearSegs);
 
-    /// <summary>道路（橋・交差点・滑走路）の上にいるか。</summary>
+    /// <summary>道路（橋・交差点・滑走路・都市街路）の上にいるか。</summary>
     public bool OnRoad(double x, double z, double width = 9)
     {
         if (AirportDistance(x, z) < width) return true;
@@ -668,7 +1037,426 @@ public sealed class FreeWorld
                 if ((x - j.X) * (x - j.X) + (z - j.Z) * (z - j.Z) < (j.Radius + width - 8) * (j.Radius + width - 8)) return true;
             }
         }
-        return false;
+        return TryGetCityStreetInfo(x, z, out double stDist, out _, out _) && stDist <= Math.Max(5.3, width - 3.5);
+    }
+
+    private bool HasHorizStreetEdge(long kx, long kz)
+    {
+        long cx = FloorDiv(kx, 4), cz = FloorDiv(kz, 4);
+        var chunk = EnsureStreetTopology(cx, cz);
+        return chunk.HasStreets && chunk.HGrid[kx - cx * 4, kz - cz * 4];
+    }
+
+    private bool HasVertStreetEdge(long kx, long kz)
+    {
+        long cx = FloorDiv(kx, 4), cz = FloorDiv(kz, 4);
+        var chunk = EnsureStreetTopology(cx, cz);
+        return chunk.HasStreets && chunk.VGrid[kx - cx * 4, kz - cz * 4];
+    }
+
+    private bool TryGetCityStreetInfo(double x, double z, out double distFromCenter, out float streetOffsetY, out bool onSidewalk)
+    {
+        const double gridStep = CityCell * 2;
+        const double roadHW = 3.8;
+        const double walkHW = 5.2;
+        const double chamfer = 0.85;
+        const double outerSlope = walkHW + 0.30;
+
+        long nx = (long)Math.Floor(x / gridStep + 0.5);
+        long nz = (long)Math.Floor(z / gridStep + 0.5);
+        double dxN = x - nx * gridStep, dzN = z - nz * gridStep;
+        double ax = Math.Abs(dxN), az = Math.Abs(dzN);
+
+        if (ax > outerSlope && az > outerSlope)
+        {
+            distFromCenter = double.MaxValue;
+            streetOffsetY = 0f;
+            onSidewalk = false;
+            return false;
+        }
+
+        static float EdgeHeightOffset(double d)
+        {
+            if (d <= roadHW - 0.15) return 0f;
+            if (d < roadHW + 0.15) return Smooth(roadHW - 0.15, roadHW + 0.15, d) * 0.11f;
+            if (d <= walkHW - 0.10) return 0.11f;
+            return (1f - Smooth(walkHW - 0.10, outerSlope, d)) * 0.11f;
+        }
+
+        if (ax <= outerSlope && az <= outerSlope)
+        {
+            bool hasE = HasHorizStreetEdge(nx, nz);
+            bool hasW = HasHorizStreetEdge(nx - 1, nz);
+            bool hasN = HasVertStreetEdge(nx, nz);
+            bool hasS = HasVertStreetEdge(nx, nz - 1);
+            if (!hasE && !hasW && !hasN && !hasS)
+            {
+                distFromCenter = double.MaxValue;
+                streetOffsetY = 0f;
+                onSidewalk = false;
+                return false;
+            }
+            if (hasN && hasS && !hasE && !hasW)
+            {
+                distFromCenter = ax;
+                onSidewalk = ax > roadHW;
+                streetOffsetY = EdgeHeightOffset(ax);
+                return true;
+            }
+            if (hasE && hasW && !hasN && !hasS)
+            {
+                distFromCenter = az;
+                onSidewalk = az > roadHW;
+                streetOffsetY = EdgeHeightOffset(az);
+                return true;
+            }
+
+            bool openX = dxN >= 0 ? hasE : hasW;
+            bool openZ = dzN >= 0 ? hasN : hasS;
+            bool onAsphalt = (ax <= roadHW && (az <= roadHW || openZ))
+                || (az <= roadHW && openX)
+                || (openX && openZ && ax + az <= roadHW * 2.0 + chamfer);
+
+            if (onAsphalt)
+            {
+                onSidewalk = false;
+                distFromCenter = Math.Min(ax, az);
+                streetOffsetY = 0f;
+                return true;
+            }
+
+            onSidewalk = true;
+            double outerOver = Math.Max(ax > walkHW ? ax - walkHW : 0.0, az > walkHW ? az - walkHW : 0.0);
+            if (outerOver > 0.0)
+            {
+                distFromCenter = walkHW + outerOver;
+                streetOffsetY = (1f - Smooth(0.0, outerSlope - walkHW, outerOver)) * 0.11f;
+                return true;
+            }
+
+            double overAsphalt = openX && openZ
+                ? (ax + az - (roadHW * 2.0 + chamfer)) * 0.7071
+                : Math.Min(!openX && ax > roadHW ? ax - roadHW : double.MaxValue, !openZ && az > roadHW ? az - roadHW : double.MaxValue);
+            if (overAsphalt == double.MaxValue) overAsphalt = 0.0;
+            distFromCenter = roadHW + Math.Max(0.0, overAsphalt);
+            streetOffsetY = Smooth(0.0, 0.30, Math.Max(0.0, overAsphalt)) * 0.11f;
+            return true;
+        }
+
+        if (ax > outerSlope)
+        {
+            long kxSeg = (long)Math.Floor(x / gridStep);
+            if (!HasHorizStreetEdge(kxSeg, nz))
+            {
+                distFromCenter = double.MaxValue;
+                streetOffsetY = 0f;
+                onSidewalk = false;
+                return false;
+            }
+            distFromCenter = az;
+            onSidewalk = az > roadHW;
+            streetOffsetY = EdgeHeightOffset(az);
+            return true;
+        }
+
+        long kzSeg = (long)Math.Floor(z / gridStep);
+        if (!HasVertStreetEdge(nx, kzSeg))
+        {
+            distFromCenter = double.MaxValue;
+            streetOffsetY = 0f;
+            onSidewalk = false;
+            return false;
+        }
+        distFromCenter = ax;
+        onSidewalk = ax > roadHW;
+        streetOffsetY = EdgeHeightOffset(ax);
+        return true;
+    }
+
+    private static string DirName(double dx, double dz)
+        => Math.Abs(dx) >= Math.Abs(dz) ? (dx >= 0 ? "東" : "西") : (dz >= 0 ? "北" : "南");
+
+    private string GetJunctionName(Junction j)
+    {
+        var (placeName, d) = NearestPlace(j.X, j.Z);
+        string baseName = d < 1200 ? placeName : j.City.Name;
+        bool hasMegaBridge = false, hasExpressway = false;
+        foreach (var arm in j.Arms)
+        {
+            var t = segs[arm.SegIndex].Road.Type;
+            if (t == RoadType.MegaBridge) hasMegaBridge = true;
+            else if (t == RoadType.Expressway) hasExpressway = true;
+        }
+        if (hasMegaBridge) return $"{baseName}大橋";
+        if (hasExpressway) return $"{baseName}IC";
+        if (j.Arms.Count >= 4) return $"{baseName}中央";
+        return $"{baseName}駅前";
+    }
+
+    private static (int SigIdx, bool PedGreen) GetJunctionSignalState(Junction j, int armIndex, float time)
+    {
+        double axis0 = j.Arms[0].Angle;
+        int phase = Math.Abs(Math.Cos(j.Arms[armIndex].Angle - axis0)) >= 0.58 ? 0 : 1;
+        float cycle = (time + phase * 9f) % 18f;
+        int sigIdx = cycle < 7.0f ? 0 : cycle < 8.5f ? 1 : 2; // 0:青 1:黄 2:赤
+        bool pedGreen = phase == 0 ? cycle < 6.0f : cycle >= 9.0f && cycle < 15.0f;
+        return (sigIdx, pedGreen);
+    }
+
+    private static (int NsState, int EwState) GetCityCrossSignalState(long kx, long kz, float time)
+    {
+        long gx = kx >> 1, gz = kz >> 1;
+        float nsCycle = (time + (((gx + gz) & 1) * 4.5f)) % 18f;
+        int nsState = nsCycle < 7.0f ? 0 : nsCycle < 8.4f ? 1 : 2;
+        int ewState = nsCycle < 9.0f ? 2 : nsCycle < 16.0f ? 0 : nsCycle < 17.4f ? 1 : 2;
+        return (nsState, ewState);
+    }
+
+    private string GetStreetCrossName(long kx, long kz)
+    {
+        const double gridStep = CityCell * 2;
+        double wx = kx * gridStep, wz = kz * gridStep;
+        var (placeName, d) = NearestPlace(wx, wz);
+        Place nearestPl = Places[0];
+        double best = double.MaxValue;
+        foreach (var pl in Places)
+        {
+            double dd = (pl.X - wx) * (pl.X - wx) + (pl.Z - wz) * (pl.Z - wz);
+            if (dd < best) { best = dd; nearestPl = pl; }
+        }
+        if (d < 220)
+        {
+            string[] cores = { "本町", "中央", "駅前", "大通" };
+            int idx = (int)(((kx >> 1) & 1) + (((kz >> 1) & 1) << 1));
+            if ((kx & 1) != 0 || (kz & 1) != 0)
+                return $"{placeName}{cores[idx]}仲";
+            return $"{placeName}{cores[idx]}";
+        }
+        string dir = DirName(wx - nearestPl.X, wz - nearestPl.Z);
+        long relX = Math.Abs(kx - (long)Math.Round(nearestPl.X / gridStep));
+        long relZ = Math.Abs(kz - (long)Math.Round(nearestPl.Z / gridStep));
+        long blockNo = ((relX * 3 + relZ) % 8) + 1;
+        if (d < 440 && (kx & 1) == 0 && (kz & 1) == 0)
+        {
+            string[] avenues = { "表通り", "大通り", "栄通り", "新道" };
+            int ai = (int)(((kx >> 1) & 1) + (((kz >> 1) & 1) << 1));
+            return $"{placeName}{dir}{avenues[ai]}";
+        }
+        return $"{placeName}{dir}{blockNo}丁目";
+    }
+
+    /// <summary>都市スタート時に、ビルや草地・交差点の中央を避けて最寄り道路の停止線手前へ配置する。</summary>
+    public (double X, double Z, float Heading) FindSafeRoadSpawn(double cx, double cz)
+    {
+        Junction? bestJct = null;
+        double bestJctD2 = 450.0 * 450.0;
+        foreach (var j in junctions)
+        {
+            double d2 = (j.X - cx) * (j.X - cx) + (j.Z - cz) * (j.Z - cz);
+            if (j.Arms.Count >= 2 && d2 < bestJctD2)
+            {
+                bestJctD2 = d2;
+                bestJct = j;
+            }
+        }
+        if (bestJct != null)
+        {
+            foreach (var arm in bestJct.Arms)
+            {
+                var s = segs[arm.SegIndex];
+                if (arm.Trim + 18.0 >= s.Len * 0.45) continue;
+                double dx = arm.OutDx, dz = arm.OutDz;
+                double nx = -dz, nz = dx;
+                // 青看(Trim+17.5)より手前に配置して看板・信号が両方見渡せる位置から開始する
+                double spawnDist = Math.Min(s.Len * 0.43, arm.Trim + 33.0);
+                double sx = bestJct.X + dx * spawnDist - nx * 2.2;
+                double sz = bestJct.Z + dz * spawnDist - nz * 2.2;
+                if (HitBlock(sx, sz, RoadY + 1f, 2.2f) != null) continue;
+                float hdg = (float)((Math.Atan2(-dx, -dz) * 180.0 / Math.PI + 360.0) % 360.0);
+                return (sx, sz, hdg);
+            }
+        }
+
+        const double gridStep = CityCell * 2;
+        long nx0 = (long)Math.Round(cx / gridStep);
+        long nz0 = (long)Math.Round(cz / gridStep);
+        double bestStD2 = double.MaxValue;
+        (double X, double Z, float Heading)? bestSt = null;
+        for (long dx = -3; dx <= 3; dx++)
+        {
+            for (long dz = -3; dz <= 3; dz++)
+            {
+                long kx = nx0 + dx, kz = nz0 + dz;
+                if (HasVertStreetEdge(kx, kz))
+                {
+                    double sx = kx * gridStep - 1.9;
+                    double sz = (kz + 0.72) * gridStep;
+                    double d2 = (sx - cx) * (sx - cx) + (sz - cz) * (sz - cz);
+                    if (d2 < bestStD2 && HitBlock(sx, sz, StreetY(sx, sz) + 1f, 2.2f) == null)
+                    {
+                        bestStD2 = d2;
+                        bestSt = (sx, sz, 0f);
+                    }
+                }
+                if (HasHorizStreetEdge(kx, kz))
+                {
+                    double sx = (kx + 0.72) * gridStep;
+                    double sz = kz * gridStep + 1.9;
+                    double d2 = (sx - cx) * (sx - cx) + (sz - cz) * (sz - cz);
+                    if (d2 < bestStD2 && HitBlock(sx, sz, StreetY(sx, sz) + 1f, 2.2f) == null)
+                    {
+                        bestStD2 = d2;
+                        bestSt = (sx, sz, 90f);
+                    }
+                }
+            }
+        }
+        if (bestSt is { } st) return st;
+
+        if (HitBlock(cx, cz, SurfaceY(cx, cz) + 1f, 2.2f) != null)
+        {
+            for (int r = 1; r <= 6; r++)
+            {
+                for (int a = 0; a < 8; a++)
+                {
+                    double ang = a * Math.PI * 0.25;
+                    double tx = cx + Math.Sin(ang) * (r * 12.0);
+                    double tz = cz + Math.Cos(ang) * (r * 12.0);
+                    if (HitBlock(tx, tz, SurfaceY(tx, tz) + 1f, 2.2f) == null)
+                        return (tx, tz, 0f);
+                }
+            }
+        }
+        return (cx, cz, 0f);
+    }
+
+    public (string RoadLabel, bool OnSidewalk, string? AheadLabel, double? AheadDist) GetRoadNavSummary(double x, double z, float headingDeg)
+    {
+        double hx = Math.Sin(headingDeg * Math.PI / 180.0);
+        double hz = Math.Cos(headingDeg * Math.PI / 180.0);
+
+        int bestSeg = -1;
+        double bestSegDist = 11.0;
+        double bestSegT = 0;
+        foreach (int i in nearSegs)
+        {
+            double sd = SegDistance(segs[i], x, z, out double t);
+            if (sd < bestSegDist)
+            {
+                bestSegDist = sd;
+                bestSeg = i;
+                bestSegT = t;
+            }
+        }
+        if (bestSeg >= 0)
+        {
+            var s = segs[bestSeg];
+            double dot = s.Dx * hx + s.Dz * hz;
+            int aheadJi = dot >= 0 ? s.JctB : s.JctA;
+            if (aheadJi < 0) aheadJi = dot >= 0 ? s.JctA : s.JctB;
+            string? aheadName = null;
+            double? aheadDist = null;
+            if (aheadJi >= 0)
+            {
+                var j = junctions[aheadJi];
+                double jdx = j.X - x, jdz = j.Z - z;
+                double jd = Math.Sqrt(jdx * jdx + jdz * jdz);
+                if (jd > 18 && jd < 4000 && (jdx * hx + jdz * hz) / jd > 0.25)
+                {
+                    aheadName = GetJunctionName(j);
+                    aheadDist = jd;
+                }
+            }
+            string typeTag = s.Road.Type switch
+            {
+                RoadType.Expressway => "（高速）",
+                RoadType.MegaBridge => "（海上橋）",
+                _ => "",
+            };
+            return ($"{s.Road.Name}{typeTag}", false, aheadName, aheadDist);
+        }
+
+        foreach (var j in junctions)
+        {
+            double jd2 = (j.X - x) * (j.X - x) + (j.Z - z) * (j.Z - z);
+            if (jd2 <= (j.Radius + 5.0) * (j.Radius + 5.0))
+                return ($"交差点：{GetJunctionName(j)}", false, null, null);
+        }
+
+        foreach (var ap in airports)
+        {
+            double adx = x - ap.X, adz = z - ap.Z;
+            double along = adx * ap.Dx + adz * ap.Dz;
+            double perp = Math.Abs(-adx * ap.Dz + adz * ap.Dx);
+            if (Math.Abs(along) <= 320 && perp <= 26)
+                return ($"滑走路：{ap.Name}", false, null, null);
+        }
+
+        if (TryGetCityStreetInfo(x, z, out _, out _, out bool onSidewalk))
+        {
+            const double gridStep = CityCell * 2;
+            long nx = (long)Math.Floor(x / gridStep + 0.5);
+            long nz = (long)Math.Floor(z / gridStep + 0.5);
+            double ax = Math.Abs(x - nx * gridStep), az = Math.Abs(z - nz * gridStep);
+            bool alongEW = (ax <= 5.5 && az <= 5.5) ? Math.Abs(hx) >= Math.Abs(hz) : ax > az;
+
+            string? aheadName = null;
+            double? aheadDist = null;
+            if (alongEW)
+            {
+                int dir = hx >= 0 ? 1 : -1;
+                long kzLine = nz;
+                long startKx = (long)Math.Floor(x / gridStep) + (dir > 0 ? 1 : 0);
+                for (int step = 0; step < 5; step++)
+                {
+                    long kxNode = startKx + step * dir;
+                    double tx = kxNode * gridStep, tz = kzLine * gridStep;
+                    double d = Math.Sqrt((tx - x) * (tx - x) + (tz - z) * (tz - z));
+                    if (d < 12) continue;
+                    bool hasN = HasVertStreetEdge(kxNode, kzLine);
+                    bool hasS = HasVertStreetEdge(kxNode, kzLine - 1);
+                    if (hasN || hasS)
+                    {
+                        aheadName = GetStreetCrossName(kxNode, kzLine);
+                        aheadDist = d;
+                        break;
+                    }
+                    bool cont = dir > 0 ? HasHorizStreetEdge(kxNode, kzLine) : HasHorizStreetEdge(kxNode - 1, kzLine);
+                    if (!cont) break;
+                }
+            }
+            else
+            {
+                int dir = hz >= 0 ? 1 : -1;
+                long kxLine = nx;
+                long startKz = (long)Math.Floor(z / gridStep) + (dir > 0 ? 1 : 0);
+                for (int step = 0; step < 5; step++)
+                {
+                    long kzNode = startKz + step * dir;
+                    double tx = kxLine * gridStep, tz = kzNode * gridStep;
+                    double d = Math.Sqrt((tx - x) * (tx - x) + (tz - z) * (tz - z));
+                    if (d < 12) continue;
+                    bool hasE = HasHorizStreetEdge(kxLine, kzNode);
+                    bool hasW = HasHorizStreetEdge(kxLine - 1, kzNode);
+                    if (hasE || hasW)
+                    {
+                        aheadName = GetStreetCrossName(kxLine, kzNode);
+                        aheadDist = d;
+                        break;
+                    }
+                    bool cont = dir > 0 ? HasVertStreetEdge(kxLine, kzNode) : HasVertStreetEdge(kxLine, kzNode - 1);
+                    if (!cont) break;
+                }
+            }
+
+            var (placeName, _) = NearestPlace(x, z);
+            string axisLabel = alongEW ? "東西通り" : "南北通り";
+            return ($"一般道：{placeName} {axisLabel}", onSidewalk, aheadName, aheadDist);
+        }
+
+        if (Altitude > 2f) return ("上空飛行", false, null, null);
+        if (IsInWater(x, z)) return ("水上・海上", false, null, null);
+        return ("フリー走行（一般エリア）", false, null, null);
     }
 
     // ---------------- 地形の高さ ----------------
@@ -712,7 +1500,7 @@ public sealed class FreeWorld
         if (h < 0.05f) return 0;
 
         // 地面メッシュ（25m格子）のポリゴンが道路・水際をまたいでも急崖にならないよう滑らかに平坦化する
-        float flat = Smooth(90, 380, RoadDistance(x, z));
+        float flat = Smooth(90, 380, FastRoadDistance(x, z, 400));
         var (lat, lon) = ToLatLon(x, z);
         flat = Math.Min(flat, LandRaster.ShoreFactor(lat, lon));
         foreach (var pl in Places)
@@ -745,7 +1533,7 @@ public sealed class FreeWorld
     private bool IsVertexNearRoadOrCity(double x, double z, double step)
     {
         double pad = step * 1.45;
-        if (RoadDistance(x, z) < pad + 34) return true;
+        if (FastRoadDistance(x, z, pad + 34) < pad + 34) return true;
         double streetPad = pad + 14;
         foreach (var pl in Places)
         {
@@ -773,7 +1561,7 @@ public sealed class FreeWorld
     public bool IsInWater(double x, double z)
         => TryGetRiverAt(x, z, out _, out bool inRiverWater) ? inRiverWater : BaseGroundY(x, z) < WaterY;
 
-    /// <summary>その場所の地面の高さ（道路・路肩スロープ・河川堤防・陸・水底）。</summary>
+    /// <summary>その場所の地面の高さ（道路・路肩スロープ・一般道・河川堤防・陸・水底）。</summary>
     public float SurfaceY(double x, double z)
     {
         float baseY = BaseGroundY(x, z);
@@ -781,6 +1569,8 @@ public sealed class FreeWorld
             baseY = inRiverWater ? riverY : Math.Max(baseY, riverY);
         double rd = NearRoadDistance(x, z);
         if (rd <= 8.2) return RoadY;
+        if (rd >= 11.5 && TryGetCityStreetInfo(x, z, out _, out float stOff, out _))
+            baseY = Math.Max(0.08f, baseY + 0.05f) + stOff;
         if (rd < 13.5)
         {
             float t = Smooth(8.2, 13.5, rd);
@@ -938,21 +1728,55 @@ public sealed class FreeWorld
         if (place.Blocks != null) return place.Blocks;
         var list = new List<Block>();
         double radius = place.Radius;
-        int n = (int)(radius / CityCell);
+        long i0 = (long)Math.Floor((place.X - radius) / CityCell);
+        long i1 = (long)Math.Ceiling((place.X + radius) / CityCell);
+        long j0 = (long)Math.Floor((place.Z - radius) / CityCell);
+        long j1 = (long)Math.Ceiling((place.Z + radius) / CityCell);
+        int selfOrder = Places.IndexOf(place);
+        var overlapPlaces = new List<(Place P, int Order)>();
+        for (int pi = 0; pi < Places.Count; pi++)
+        {
+            var op = Places[pi];
+            if (op == place) continue;
+            double lim = radius + op.Radius + CityCell;
+            if (Math.Abs(op.X - place.X) <= lim && Math.Abs(op.Z - place.Z) <= lim)
+                overlapPlaces.Add((op, pi));
+        }
         var roadsHere = segs.Where(s => SegDistance(s, place.X, place.Z, out _) < radius + 120).ToList();
         var jctsHere = junctions.Where(j => Math.Abs(j.X - place.X) < radius + 120 && Math.Abs(j.Z - place.Z) < radius + 120).ToList();
         float maxH = place.Tier switch { 0 => 190, 1 => 115, 2 => 55, _ => 28 };
 
-        for (int i = -n; i < n; i++)
+        for (long i = i0; i <= i1; i++)
         {
-            for (int j = -n; j < n; j++)
+            for (long j = j0; j <= j1; j++)
             {
-                long id = (i + 1000) * 7919L + (j + 1000) * 104729L + place.Name.GetHashCode();
-                // 街路（2マス＝88mおきの境界線）を避けるため、各セルの中心（+0.5）付近に建物を配置する
-                double jitterX = (Scene.Hash(id) - 0.5) * 0.14;
-                double jitterZ = (Scene.Hash(id + 1) - 0.5) * 0.14;
-                double x = place.X + (i + 0.5 + jitterX) * CityCell;
-                double z = place.Z + (j + 0.5 + jitterZ) * CityCell;
+                long id = (i + 100000L) * 7919L + (j + 100000L) * 104729L;
+                // 全都市で共通の88m街路格子を使うことで、隣接・重複する大都市圏でも建物が道路へ被らない
+                double cellX = (i + 0.5) * CityCell;
+                double cellZ = (j + 0.5) * CityCell;
+                double dCell = Math.Sqrt((cellX - place.X) * (cellX - place.X) + (cellZ - place.Z) * (cellZ - place.Z));
+                if (dCell > radius + CityCell * 0.5) continue;
+                double selfNorm = dCell / radius;
+                bool ownedByOther = false;
+                foreach (var (op, opOrder) in overlapPlaces)
+                {
+                    double od = Math.Sqrt((cellX - op.X) * (cellX - op.X) + (cellZ - op.Z) * (cellZ - op.Z));
+                    if (od <= op.Radius + CityCell * 0.5)
+                    {
+                        double oNorm = od / op.Radius;
+                        if (oNorm < selfNorm - 1e-6 || (Math.Abs(oNorm - selfNorm) <= 1e-6 && opOrder < selfOrder))
+                        {
+                            ownedByOther = true;
+                            break;
+                        }
+                    }
+                }
+                if (ownedByOther) continue;
+
+                double jitterX = (Scene.Hash(id) - 0.5) * 0.11;
+                double jitterZ = (Scene.Hash(id + 1) - 0.5) * 0.11;
+                double x = cellX + jitterX * CityCell;
+                double z = cellZ + jitterZ * CityCell;
                 double d = Math.Sqrt((x - place.X) * (x - place.X) + (z - place.Z) * (z - place.Z));
                 if (d > radius || Scene.Hash(id + 2) > 0.78 - d / radius * 0.38) continue;
 
@@ -1087,8 +1911,12 @@ public sealed class FreeWorld
         Rgb(160, 30, 40), Rgb(210, 190, 60), Rgb(60, 120, 80), Rgb(230, 230, 220),
     };
 
-    public void UpdateTraffic(float dt)
+    public void UpdateTraffic(float dt, float time = -1f)
     {
+        float sigTime = time >= 0f ? time : drawTime;
+        const double gridStep = CityCell * 2;
+        int streetCarCount = 0;
+
         for (int i = Cars.Count - 1; i >= 0; i--)
         {
             var c = Cars[i];
@@ -1104,10 +1932,101 @@ public sealed class FreeWorld
                 if (c.FlyTime > 3.2f) Cars.RemoveAt(i);
                 continue;
             }
+
+            if (c.OnStreet)
+            {
+                streetCarCount++;
+                float targetSp = c.Speed;
+                long nextKx = c.StreetKx + c.StreetDx;
+                long nextKz = c.StreetKz + c.StreetDz;
+                double distToNode = (1.0 - c.StreetFrac) * gridStep;
+
+                // 主要一般道交差点（MajorCross）の信号に合わせて停止線で止まる
+                if ((nextKx & 1) == 0 && (nextKz & 1) == 0 && distToNode > 6.5 && distToNode < 34.0)
+                {
+                    var (nsState, ewState) = GetCityCrossSignalState(nextKx, nextKz, sigTime);
+                    int sig = c.StreetDz != 0 ? nsState : ewState;
+                    if (sig != 0)
+                    {
+                        double gap = Math.Max(0.0, distToNode - 8.2);
+                        targetSp = Math.Min(targetSp, (float)Math.Clamp(gap * 0.9, 0.0, c.Speed));
+                    }
+                }
+
+                // 前走車との車間確保
+                for (int j = 0; j < Cars.Count; j++)
+                {
+                    if (j == i) continue;
+                    var o = Cars[j];
+                    if (o.Flying || !o.OnStreet) continue;
+                    if (o.StreetKx == c.StreetKx && o.StreetKz == c.StreetKz && o.StreetDx == c.StreetDx && o.StreetDz == c.StreetDz && o.StreetFrac > c.StreetFrac)
+                    {
+                        double gap = (o.StreetFrac - c.StreetFrac) * gridStep;
+                        if (gap < 14.0)
+                            targetSp = Math.Min(targetSp, o.CurSpeed * (float)Math.Clamp((gap - 6.5) / 7.5, 0.0, 1.0));
+                    }
+                }
+
+                c.CurSpeed += (targetSp - c.CurSpeed) * Math.Min(1f, dt * 6f);
+                c.StreetFrac += c.CurSpeed * dt / gridStep;
+                c.Dist += c.CurSpeed * dt;
+                if (c.StreetFrac >= 1.0)
+                {
+                    if (!TransferStreetCar(c, nextKx, nextKz)) { Cars.RemoveAt(i); continue; }
+                }
+                SetCarPos(c);
+                double sdx = c.X - PX, sdz = c.Z - PZ;
+                if (sdx * sdx + sdz * sdz > 650 * 650) Cars.RemoveAt(i);
+                continue;
+            }
+
             var s = segs[c.Seg];
             double len = s.Len;
-            c.T += c.Dir * c.Speed * dt / len;
-            c.Dist += c.Speed * dt;
+            float targetSpeed = c.Speed;
+
+            // 交差点の信号（赤・黄）に合わせて停止線手前で減速・停止する
+            int aheadJi = c.Dir > 0 ? s.JctB : s.JctA;
+            bool continuousNext = c.Dir > 0 ? s.NextSegB >= 0 : s.NextSegA >= 0;
+            if (!continuousNext && aheadJi >= 0)
+            {
+                var jct = junctions[aheadJi];
+                if (jct.Arms.Count >= 2)
+                {
+                    double distRemaining = c.Dir > 0 ? (1.0 - c.T) * len : c.T * len;
+                    for (int ai = 0; ai < jct.Arms.Count; ai++)
+                    {
+                        if (jct.Arms[ai].SegIndex != c.Seg) continue;
+                        double stopDist = jct.Arms[ai].Trim + 5.6;
+                        if (distRemaining > stopDist - 1.5 && distRemaining < stopDist + 38.0)
+                        {
+                            var (sigIdx, _) = GetJunctionSignalState(jct, ai, sigTime);
+                            if (sigIdx != 0)
+                            {
+                                double gap = Math.Max(0.0, distRemaining - stopDist);
+                                targetSpeed = Math.Min(targetSpeed, (float)Math.Clamp(gap * 0.95, 0.0, c.Speed));
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            // 同車線の前走車に追いついたら減速する
+            for (int j = 0; j < Cars.Count; j++)
+            {
+                if (j == i) continue;
+                var o = Cars[j];
+                if (o.Flying || o.OnStreet || o.Seg != c.Seg || o.Dir != c.Dir || Math.Abs(o.Lane - c.Lane) > 1.5f) continue;
+                double deltaT = (o.T - c.T) * c.Dir;
+                if (deltaT <= 0) continue;
+                double gap = deltaT * len;
+                if (gap < 18.0)
+                    targetSpeed = Math.Min(targetSpeed, o.CurSpeed * (float)Math.Clamp((gap - 7.5) / 10.5, 0.0, 1.0));
+            }
+
+            c.CurSpeed += (targetSpeed - c.CurSpeed) * Math.Min(1f, dt * 5f);
+            c.T += c.Dir * c.CurSpeed * dt / len;
+            c.Dist += c.CurSpeed * dt;
             if (c.T < 0 || c.T > 1)
             {
                 // 交差点に着いたら消えずに次の道路へ乗り継ぐ
@@ -1118,8 +2037,10 @@ public sealed class FreeWorld
             if (dx * dx + dz * dz > 1600 * 1600) Cars.RemoveAt(i);
         }
 
+        // 幹線道路上のAI車スポーン
+        int highwayCars = Cars.Count - streetCarCount;
         int tries = 0;
-        while (Cars.Count < 16 && nearSegs.Count > 0 && tries++ < 6)
+        while (highwayCars < 16 && nearSegs.Count > 0 && tries++ < 6)
         {
             int si = nearSegs[rng.Next(nearSegs.Count)];
             var s = segs[si];
@@ -1130,18 +2051,74 @@ public sealed class FreeWorld
             double roll = rng.NextDouble();
             var kind = roll < 0.22 ? VehicleKind.Truck : roll < 0.42 ? VehicleKind.Kei
                 : roll < 0.65 ? VehicleKind.Minivan : roll < 0.7 ? VehicleKind.Sports : VehicleKind.Sedan;
+            float baseSp = kind == VehicleKind.Truck ? 22 + (float)rng.NextDouble() * 3 : 24 + (float)rng.NextDouble() * 8;
             var car = new FreeCar
             {
                 Seg = si, T = t, Dir = rng.NextDouble() < 0.5 ? 1 : -1,
                 Lane = rng.NextDouble() < 0.6 ? 5.6f : 2.4f,
-                Speed = kind == VehicleKind.Truck ? 22 + (float)rng.NextDouble() * 3 : 24 + (float)rng.NextDouble() * 8,
+                Speed = baseSp, CurSpeed = baseSp,
                 Color = Palette[rng.Next(Palette.Length)], Kind = kind, Y = RoadY,
             };
             SetCarPos(car);
             double dx = car.X - PX, dz = car.Z - PZ;
             if (dx * dx + dz * dz < 150 * 150) continue;
             Cars.Add(car);
+            highwayCars++;
         }
+
+        // 都市街路上のAI車スポーン
+        if (Altitude < 260)
+        {
+            int stTries = 0;
+            long baseKx = (long)Math.Floor(PX / gridStep);
+            long baseKz = (long)Math.Floor(PZ / gridStep);
+            while (streetCarCount < 6 && stTries++ < 8)
+            {
+                long kx = baseKx + rng.Next(-4, 5);
+                long kz = baseKz + rng.Next(-4, 5);
+                bool horiz = rng.Next(2) == 0;
+                if (horiz ? !HasHorizStreetEdge(kx, kz) : !HasVertStreetEdge(kx, kz)) continue;
+                int sgn = rng.Next(2) == 0 ? 1 : -1;
+                long startKx = horiz && sgn < 0 ? kx + 1 : kx;
+                long startKz = !horiz && sgn < 0 ? kz + 1 : kz;
+                double frac = 0.15 + rng.NextDouble() * 0.7;
+                double roll = rng.NextDouble();
+                var kind = roll < 0.35 ? VehicleKind.Kei : roll < 0.75 ? VehicleKind.Sedan : VehicleKind.Minivan;
+                float sp = 10f + (float)rng.NextDouble() * 4.5f;
+                var car = new FreeCar
+                {
+                    OnStreet = true,
+                    StreetKx = startKx, StreetKz = startKz,
+                    StreetDx = horiz ? sgn : 0, StreetDz = horiz ? 0 : sgn,
+                    StreetFrac = frac,
+                    Speed = sp, CurSpeed = sp,
+                    Color = Palette[rng.Next(Palette.Length)], Kind = kind,
+                };
+                SetCarPos(car);
+                double dx = car.X - PX, dz = car.Z - PZ;
+                if (dx * dx + dz * dz < 80 * 80) continue;
+                Cars.Add(car);
+                streetCarCount++;
+            }
+        }
+    }
+
+    private bool TransferStreetCar(FreeCar c, long nodeKx, long nodeKz)
+    {
+        Span<(int dx, int dz)> opts = stackalloc (int, int)[4];
+        int count = 0;
+        if (HasHorizStreetEdge(nodeKx, nodeKz) && !(c.StreetDx == -1 && c.StreetDz == 0)) opts[count++] = (1, 0);
+        if (HasHorizStreetEdge(nodeKx - 1, nodeKz) && !(c.StreetDx == 1 && c.StreetDz == 0)) opts[count++] = (-1, 0);
+        if (HasVertStreetEdge(nodeKx, nodeKz) && !(c.StreetDx == 0 && c.StreetDz == -1)) opts[count++] = (0, 1);
+        if (HasVertStreetEdge(nodeKx, nodeKz - 1) && !(c.StreetDx == 0 && c.StreetDz == 1)) opts[count++] = (0, -1);
+        if (count == 0) return false;
+        var chosen = opts[rng.Next(count)];
+        c.StreetKx = nodeKx;
+        c.StreetKz = nodeKz;
+        c.StreetDx = chosen.dx;
+        c.StreetDz = chosen.dz;
+        c.StreetFrac = Math.Max(0.0, c.StreetFrac - 1.0);
+        return true;
     }
 
     private bool TransferCarAtJunction(FreeCar c)
@@ -1178,6 +2155,18 @@ public sealed class FreeWorld
 
     private void SetCarPos(FreeCar c)
     {
+        if (c.OnStreet)
+        {
+            const double gridStep = CityCell * 2;
+            double cx = (c.StreetKx + c.StreetDx * c.StreetFrac) * gridStep;
+            double cz = (c.StreetKz + c.StreetDz * c.StreetFrac) * gridStep;
+            // 左側通行：進行方向 (StreetDx, StreetDz) の左側 (-StreetDz, StreetDx)
+            c.X = cx - c.StreetDz * 1.9;
+            c.Z = cz + c.StreetDx * 1.9;
+            c.Y = StreetY(c.X, c.Z);
+            c.Heading = (float)(Math.Atan2(c.StreetDx, c.StreetDz) * 180.0 / Math.PI);
+            return;
+        }
         var s = segs[c.Seg];
         double dx = s.Dx * c.Dir, dz = s.Dz * c.Dir;
         // 左側通行：進行方向の左へずらす（左向きの法線は (-dz, dx)）
@@ -1212,10 +2201,10 @@ public sealed class FreeWorld
 
     // ---------------- 描画 ----------------
 
-    private void V(double x, float y, double z, Color c)
+    private void V(double x, float y, double z, Color c, bool lit = false)
     {
         var p = R(x, y, z);
-        var col = scene.FogC(c, Vector3.Distance(p, cam));
+        var col = scene.FogC(c, Vector3.Distance(p, cam), lit: lit);
         Rlgl.Color4ub(col.R, col.G, col.B, 255);
         Rlgl.Vertex3f(p.X, p.Y, p.Z);
     }
@@ -1224,6 +2213,9 @@ public sealed class FreeWorld
     {
         cam = cameraPos;
         drawTime = time;
+        IntersectionPlaques.Clear();
+        BlueSignLabels.Clear();
+        EvictFarChunkMeshes();
         scene.SetCamera(cameraPos);
         DrawGround();
         DrawRivers(time);
@@ -1279,6 +2271,24 @@ public sealed class FreeWorld
         return u;
     }
 
+    private float UrbanBlendLocal(double x, double z, List<Place> localPlaces)
+    {
+        float u = 0;
+        foreach (var pl in localPlaces)
+        {
+            double dx = x - pl.X, dz = z - pl.Z;
+            double lim = pl.Radius * 1.05;
+            if (Math.Abs(dx) > lim || Math.Abs(dz) > lim) continue;
+            double d = Math.Sqrt(dx * dx + dz * dz);
+            if (d < lim)
+            {
+                float v = 1f - Smooth(pl.Radius * 0.45, lim, d);
+                if (v > u) u = v;
+            }
+        }
+        return u;
+    }
+
     private (int lvl, double step, long cx, long cz, int n) GroundGrid()
     {
         int lvl = 0;
@@ -1287,81 +2297,157 @@ public sealed class FreeWorld
         return (lvl, step, (long)Math.Floor(PX / step), (long)Math.Floor(PZ / step), (int)(ViewRadius / step));
     }
 
-    private void DrawGround()
+    private void EnsureGroundCache(int lvl, double step, long cx, long cz, int n)
     {
-        var (lvl, step, cx, cz, n) = GroundGrid();
+        if (lvl == cachedGroundLvl && n == cachedGroundN && cx == cachedGroundCx && cz == cachedGroundCz)
+            return;
+
+        cachedGroundLvl = lvl;
+        cachedGroundN = n;
+        cachedGroundCx = cx;
+        cachedGroundCz = cz;
+
+        int stride = 2 * n + 1;
+        int rawStride = stride + 2;
+        var hRaw = new float[rawStride * rawStride];
+        for (int i = -n - 1; i <= n + 1; i++)
+        {
+            int ri = (i + n + 1) * rawStride;
+            long ix = cx + i;
+            for (int j = -n - 1; j <= n + 1; j++)
+                hRaw[ri + (j + n + 1)] = HeightAt(ix, cz + j, lvl, step);
+        }
+
+        double minX = (cx - n) * step, maxX = (cx + n) * step;
+        double minZ = (cz - n) * step, maxZ = (cz + n) * step;
+        var localPlaces = new List<Place>();
+        foreach (var pl in Places)
+        {
+            double lim = pl.Radius * 1.05;
+            if (pl.X + lim >= minX && pl.X - lim <= maxX && pl.Z + lim >= minZ && pl.Z - lim <= maxZ)
+                localPlaces.Add(pl);
+        }
+
+        int total = stride * stride;
+        if (cachedGroundVerts.Length != total)
+        {
+            cachedGroundVerts = new GroundGridVert[total];
+            cachedGroundH = new float[total];
+        }
+
         var deepFloor = Rgb(22, 72, 128);
         var sand = Rgb(212, 200, 150);
         var wetSand = Rgb(164, 152, 112);
         var wetConcrete = Rgb(116, 120, 126);
+
+        for (int i = -n; i <= n; i++)
+        {
+            long ix = cx + i;
+            double wx = ix * step;
+            int outRow = (i + n) * stride;
+            int rawRow = (i + n + 1) * rawStride;
+            for (int j = -n; j <= n; j++)
+            {
+                long iz = cz + j;
+                double wz = iz * step;
+                int rawCol = j + n + 1;
+                float h = hRaw[rawRow + rawCol];
+                float hpx = hRaw[rawRow + rawStride + rawCol];
+                float hnx = hRaw[rawRow - rawStride + rawCol];
+                float hpz = hRaw[rawRow + rawCol + 1];
+                float hnz = hRaw[rawRow + rawCol - 1];
+
+                float ub = h < 15 ? UrbanBlendLocal(wx, wz, localPlaces) : 0;
+                Color wetCol = ub > 0.25f ? wetConcrete : wetSand;
+                Color shoreCol = ub > 0.25f ? Rgb(152, 154, 158) : sand;
+                Color c;
+                if (h <= SeaY + 0.05f)
+                {
+                    bool nearShore = hpx > SeaY + 0.05f || hnx > SeaY + 0.05f
+                        || hpz > SeaY + 0.05f || hnz > SeaY + 0.05f;
+                    c = nearShore ? wetCol : deepFloor;
+                }
+                else if (h < WaterY + 0.1f)
+                {
+                    float t = Math.Clamp((h - SeaY) / (WaterY - SeaY), 0, 1);
+                    c = Lerp(wetCol, shoreCol, t);
+                }
+                else
+                {
+                    bool nearWater = hpx <= SeaY + 0.05f || hpz <= SeaY + 0.05f
+                        || hnx <= SeaY + 0.05f || hnz <= SeaY + 0.05f;
+                    if (nearWater)
+                        c = shoreCol;
+                    else
+                    {
+                        float noise = Scene.Hash(ix * 73856093L ^ iz * 19349663L);
+                        float north = Math.Clamp((float)((wz / M) - 4) / 5f, 0, 1);
+                        // 高さで色を変える：草原 → 森 → 高山帯 → 岩稜 → 冠雪
+                        c = Lerp(Rgb(86 + (int)(noise * 18), 146 + (int)(noise * 14), 70), Rgb(150, 175, 130), north * 0.6f);
+                        if (h > 25) c = Lerp(c, Rgb(52, 98, 55), Math.Clamp((h - 25) / 80, 0, 1));
+                        if (h > 150) c = Lerp(c, Rgb(118, 110, 96), Math.Clamp((h - 150) / 90, 0, 1));
+                        if (h > 300) c = Lerp(c, Rgb(242, 244, 248), Math.Clamp((h - 300) / 60, 0, 1));
+
+                        // 市街地（都市・町）の中はコンクリートの街区色になじませる
+                        if (ub > 0.01f)
+                        {
+                            var urbanCol = Rgb(140 + (int)(noise * 10), 142 + (int)(noise * 10), 146 + (int)(noise * 10));
+                            c = Lerp(c, urbanCol, ub * 0.85f);
+                        }
+
+                        // 斜面の向きで明るさを変える（立体感）
+                        float shade = 1 + Math.Clamp((float)((h - hpx) * 0.5 + (h - hpz) * 0.8) / (float)step * 2.2f, -0.35f, 0.25f);
+                        c = new Color((byte)Math.Clamp(c.R * shade, 0, 255), (byte)Math.Clamp(c.G * shade, 0, 255), (byte)Math.Clamp(c.B * shade, 0, 255), (byte)255);
+                    }
+                }
+                int idx = outRow + (j + n);
+                cachedGroundVerts[idx] = new GroundGridVert(wx, wz, h, c);
+                cachedGroundH[idx] = h;
+            }
+        }
+    }
+
+    private void DrawGround()
+    {
+        var (lvl, step, cx, cz, n) = GroundGrid();
+        EnsureGroundCache(lvl, step, cx, cz, n);
+        int stride = 2 * n + 1;
+        int quads = 0;
+
         Rlgl.Begin(DrawMode.Quads);
         for (int i = -n; i < n; i++)
         {
+            int r0 = (i + n) * stride;
+            int r1 = r0 + stride;
             for (int j = -n; j < n; j++)
             {
                 if (i * i + j * j > n * n) continue;
-                long ix = cx + i, iz = cz + j;
-                Vert(ix, iz); Vert(ix + 1, iz); Vert(ix + 1, iz + 1); Vert(ix, iz + 1);
+                int c0 = j + n;
+                var v00 = cachedGroundVerts[r0 + c0];
+                var v10 = cachedGroundVerts[r1 + c0];
+                var v11 = cachedGroundVerts[r1 + c0 + 1];
+                var v01 = cachedGroundVerts[r0 + c0 + 1];
+                V(v00.Wx, v00.H, v00.Wz, v00.Col);
+                V(v10.Wx, v10.H, v10.Wz, v10.Col);
+                V(v11.Wx, v11.H, v11.Wz, v11.Col);
+                V(v01.Wx, v01.H, v01.Wz, v01.Col);
+                if (++quads >= 900)
+                {
+                    Rlgl.End();
+                    Rlgl.Begin(DrawMode.Quads);
+                    quads = 0;
+                }
             }
         }
         Rlgl.End();
-
-        void Vert(long ix, long iz)
-        {
-            double wx = ix * step, wz = iz * step;
-            float h = HeightAt(ix, iz, lvl, step);
-            float ub = h < 15 ? UrbanBlend(wx, wz) : 0;
-            Color wetCol = ub > 0.25f ? wetConcrete : wetSand;
-            Color shoreCol = ub > 0.25f ? Rgb(152, 154, 158) : sand;
-            Color c;
-            if (h <= SeaY + 0.05f)
-            {
-                bool nearShore = HeightAt(ix + 1, iz, lvl, step) > SeaY + 0.05f || HeightAt(ix - 1, iz, lvl, step) > SeaY + 0.05f
-                    || HeightAt(ix, iz + 1, lvl, step) > SeaY + 0.05f || HeightAt(ix, iz - 1, lvl, step) > SeaY + 0.05f;
-                c = nearShore ? wetCol : deepFloor;
-            }
-            else if (h < WaterY + 0.1f)
-            {
-                float t = Math.Clamp((h - SeaY) / (WaterY - SeaY), 0, 1);
-                c = Lerp(wetCol, shoreCol, t);
-            }
-            else
-            {
-                float hx = HeightAt(ix + 1, iz, lvl, step), hz = HeightAt(ix, iz + 1, lvl, step);
-                bool nearWater = hx <= SeaY + 0.05f || hz <= SeaY + 0.05f
-                    || HeightAt(ix - 1, iz, lvl, step) <= SeaY + 0.05f || HeightAt(ix, iz - 1, lvl, step) <= SeaY + 0.05f;
-                if (nearWater)
-                    c = shoreCol;
-                else
-                {
-                    float noise = Scene.Hash(ix * 73856093L ^ iz * 19349663L);
-                    float north = Math.Clamp((float)((wz / M) - 4) / 5f, 0, 1);
-                    // 高さで色を変える：草原 → 森 → 高山帯 → 岩稜 → 冠雪
-                    c = Lerp(Rgb(86 + (int)(noise * 18), 146 + (int)(noise * 14), 70), Rgb(150, 175, 130), north * 0.6f);
-                    if (h > 25) c = Lerp(c, Rgb(52, 98, 55), Math.Clamp((h - 25) / 80, 0, 1));
-                    if (h > 150) c = Lerp(c, Rgb(118, 110, 96), Math.Clamp((h - 150) / 90, 0, 1));
-                    if (h > 300) c = Lerp(c, Rgb(242, 244, 248), Math.Clamp((h - 300) / 60, 0, 1));
-
-                    // 市街地（都市・町）の中はコンクリートの街区色になじませる
-                    if (ub > 0.01f)
-                    {
-                        var urbanCol = Rgb(140 + (int)(noise * 10), 142 + (int)(noise * 10), 146 + (int)(noise * 10));
-                        c = Lerp(c, urbanCol, ub * 0.85f);
-                    }
-
-                    // 斜面の向きで明るさを変える（立体感）
-                    float shade = 1 + Math.Clamp((float)((h - hx) * 0.5 + (h - hz) * 0.8) / (float)step * 2.2f, -0.35f, 0.25f);
-                    c = new Color((byte)Math.Clamp(c.R * shade, 0, 255), (byte)Math.Clamp(c.G * shade, 0, 255), (byte)Math.Clamp(c.B * shade, 0, 255), (byte)255);
-                }
-            }
-            V(wx, h, wz, c);
-        }
     }
 
     /// <summary>海・川・湖の水平な半透明水面を描画し、水際の境界を鮮明に表現する。</summary>
     public void DrawWater()
     {
         var (lvl, step, cx, cz, n) = GroundGrid();
+        EnsureGroundCache(lvl, step, cx, cz, n);
+        int stride = 2 * n + 1;
         var deepWater = Rgb(24, 96, 166);
         var shallowWater = Rgb(42, 148, 204);
 
@@ -1370,9 +2456,8 @@ public sealed class FreeWorld
         Rlgl.DisableDepthMask();
         Rlgl.Begin(DrawMode.Quads);
 
-        void WVert(long ix, long iz, float h)
+        void WVert(double wx, double wz, float h)
         {
-            double wx = ix * step, wz = iz * step;
             var p = R(wx, WaterY, wz);
             float dist = Vector3.Distance(p, cam);
             float depth = Math.Clamp((WaterY - h) / (WaterY - SeaY), 0f, 1f);
@@ -1385,22 +2470,33 @@ public sealed class FreeWorld
             Rlgl.Vertex3f(p.X, p.Y, p.Z);
         }
 
+        int quads = 0;
         for (int i = -n; i < n; i++)
         {
+            int r0 = (i + n) * stride;
+            int r1 = r0 + stride;
             for (int j = -n; j < n; j++)
             {
                 if (i * i + j * j > n * n) continue;
-                long ix = cx + i, iz = cz + j;
-                float h00 = HeightAt(ix, iz, lvl, step);
-                float h10 = HeightAt(ix + 1, iz, lvl, step);
-                float h11 = HeightAt(ix + 1, iz + 1, lvl, step);
-                float h01 = HeightAt(ix, iz + 1, lvl, step);
+                int c0 = j + n;
+                float h00 = cachedGroundH[r0 + c0];
+                float h10 = cachedGroundH[r1 + c0];
+                float h11 = cachedGroundH[r1 + c0 + 1];
+                float h01 = cachedGroundH[r0 + c0 + 1];
                 if (Math.Min(Math.Min(h00, h10), Math.Min(h11, h01)) >= WaterY + 0.05f) continue;
 
-                WVert(ix, iz, h00);
-                WVert(ix + 1, iz, h10);
-                WVert(ix + 1, iz + 1, h11);
-                WVert(ix, iz + 1, h01);
+                double wx0 = (cx + i) * step, wx1 = wx0 + step;
+                double wz0 = (cz + j) * step, wz1 = wz0 + step;
+                WVert(wx0, wz0, h00);
+                WVert(wx1, wz0, h10);
+                WVert(wx1, wz1, h11);
+                WVert(wx0, wz1, h01);
+                if (++quads >= 600)
+                {
+                    Rlgl.End();
+                    Rlgl.Begin(DrawMode.Quads);
+                    quads = 0;
+                }
             }
         }
         DrawRiverWater(drawTime);
@@ -2351,101 +3447,401 @@ public sealed class FreeWorld
 
     private float StreetY(double x, double z) => Math.Max(0.08f, BaseGroundY(x, z) + 0.05f);
 
-    private bool IsStreetClear(Place pl, double x, double z)
+    private static long FloorDiv(long a, long b) => a >= 0 ? a / b : -((-a + b - 1) / b);
+
+    private double FullRoadDistance(double x, double z) => FastRoadDistance(x, z, 40.0);
+
+    private bool IsRiverStreetBlocked(double x, double z, List<RiverRibbon> localRivers)
     {
-        if ((x - pl.X) * (x - pl.X) + (z - pl.Z) * (z - pl.Z) > pl.Radius * pl.Radius * 0.84) return false;
-        if (!IsLand(x, z)) return false;
-        float bh = BaseGroundY(x, z);
-        if (bh < -0.05f || bh > 8f) return false;
-        return NearRoadDistance(x, z) >= 16.0;
+        foreach (var r in localRivers)
+        {
+            double reach = r.MaxHalfW + 14.0;
+            if (x < r.MinX - reach || x > r.MaxX + reach || z < r.MinZ - reach || z > r.MaxZ + reach)
+                continue;
+            var pts = r.Samples;
+            for (int i = 0; i + 1 < pts.Length; i++)
+            {
+                var a = pts[i];
+                var b = pts[i + 1];
+                double abx = b.X - a.X, abz = b.Z - a.Z;
+                double len2 = abx * abx + abz * abz;
+                double t = len2 > 1e-6 ? Math.Clamp(((x - a.X) * abx + (z - a.Z) * abz) / len2, 0.0, 1.0) : 0.0;
+                double px = a.X + abx * t, pz = a.Z + abz * t;
+                double dx = x - px, dz = z - pz;
+                float hw = LerpF(a.HalfW, b.HalfW, (float)t);
+                double limit = hw + 11.5;
+                if (dx * dx + dz * dz <= limit * limit)
+                {
+                    float ff = LerpF(a.FlowFade, b.FlowFade, (float)t);
+                    float lb = LerpF(a.LeftBank, b.LeftBank, (float)t);
+                    float rb = LerpF(a.RightBank, b.RightBank, (float)t);
+                    if (ff >= 0.1f || lb > 0.1f || rb > 0.1f) return true;
+                }
+            }
+        }
+        return false;
     }
 
-    private void DrawTrafficSignal3D(double poleX, double poleZ, float baseY, double faceDx, double faceDz,
-        float armLen, float overhangDir, float poleH, float scale, int activeIdx, bool pedGreen,
-        bool drawNamePlaque, float dist)
+    private bool IsStreetPointClear(double x, double z, List<Place> localPlaces, List<RiverRibbon> localRivers, double radiusFactor)
     {
-        var poleBase = R(poleX, baseY, poleZ);
-        var poleCol = scene.FogC(Rgb(168, 172, 178), dist);
-        var boxCol = scene.FogC(Rgb(36, 40, 46), dist);
-        float yaw = -(float)(Math.Atan2(faceDx, faceDz) * 180.0 / Math.PI);
-
-        Rlgl.PushMatrix();
-        Rlgl.Translatef(poleBase.X, poleBase.Y, poleBase.Z);
-        Rlgl.Rotatef(yaw, 0, 1, 0);
-
-        // 支柱と最上部の街灯
-        Raylib.DrawCylinder(Vector3.Zero, 0.13f * scale, 0.16f * scale, poleH, 6, poleCol);
-        float armY = poleH - 0.55f * scale;
-        float hx = overhangDir * armLen;
-        Raylib.DrawCube(new Vector3(hx * 0.5f, armY, 0), armLen + 0.16f * scale, 0.14f * scale, 0.14f * scale, poleCol);
-
-        if (scale >= 0.9f)
+        bool inPlace = false;
+        foreach (var pl in localPlaces)
         {
-            var lampCol = scene.FogC(scene.Night ? Rgb(255, 224, 145) : Rgb(230, 234, 238), dist, lit: scene.Night);
-            Raylib.DrawCube(new Vector3(overhangDir * 0.65f, poleH + 0.12f, 0), 1.3f, 0.12f, 0.14f, poleCol);
-            Raylib.DrawSphere(new Vector3(overhangDir * 1.25f, poleH + 0.04f, 0), 0.22f, lampCol);
+            double dx = x - pl.X, dz = z - pl.Z;
+            double lim = pl.Radius * radiusFactor;
+            if (dx * dx + dz * dz <= lim * lim) { inPlace = true; break; }
+        }
+        if (!inPlace) return false;
+        if (!IsLand(x, z)) return false;
+        float bh = BaseGroundY(x, z);
+        if (bh < -0.04f || bh > 7.5f) return false;
+        if (IsRiverStreetBlocked(x, z, localRivers)) return false;
+        if (AirportDistance(x, z) < 24.0) return false;
+        return FullRoadDistance(x, z) >= 16.5;
+    }
+
+    private void PushOrientedBox(double ox, float oy, double oz, double fdx, double fdz,
+        float lx, float ly, float lz, float w, float h, float d, Color col, float dist, ref int quads, bool lit = false)
+    {
+        double nx = -fdz, nz = fdx;
+        float hx = w * 0.5f, hy = h * 0.5f, hz = d * 0.5f;
+        float x0 = lx - hx, x1 = lx + hx;
+        float y0 = oy + ly - hy, y1 = oy + ly + hy;
+        float z0 = lz - hz, z1 = lz + hz;
+
+        Color cTop = scene.FogC(lit ? col : ShadeColor(col, 1.06f), dist, lit);
+        Color cFront = scene.FogC(lit ? col : ShadeColor(col, 0.96f), dist, lit);
+        Color cSide = scene.FogC(lit ? col : ShadeColor(col, 0.84f), dist, lit);
+        Color cBack = scene.FogC(lit ? col : ShadeColor(col, 0.76f), dist, lit);
+
+        void Emit(float u0, float yy0, float v0, float u1, float yy1, float v1,
+            float u2, float yy2, float v2, float u3, float yy3, float v3, Color c)
+        {
+            var p0 = R(ox + nx * u0 + fdx * v0, yy0, oz + nz * u0 + fdz * v0);
+            var p1 = R(ox + nx * u1 + fdx * v1, yy1, oz + nz * u1 + fdz * v1);
+            var p2 = R(ox + nx * u2 + fdx * v2, yy2, oz + nz * u2 + fdz * v2);
+            var p3 = R(ox + nx * u3 + fdx * v3, yy3, oz + nz * u3 + fdz * v3);
+            Rlgl.Color4ub(c.R, c.G, c.B, c.A);
+            Rlgl.Vertex3f(p0.X, p0.Y, p0.Z);
+            Rlgl.Vertex3f(p1.X, p1.Y, p1.Z);
+            Rlgl.Vertex3f(p2.X, p2.Y, p2.Z);
+            Rlgl.Vertex3f(p3.X, p3.Y, p3.Z);
         }
 
-        // 横型3灯式信号機（運転者から見て左から 青・黄・赤。背面が白飛びしないよう本体は濃灰色）
+        // 上面・下面
+        Emit(x1, y1, z0, x0, y1, z0, x0, y1, z1, x1, y1, z1, cTop);
+        Emit(x0, y0, z0, x1, y0, z0, x1, y0, z1, x0, y0, z1, cBack);
+        // 前面 (+z) / 背面 (-z)
+        Emit(x0, y0, z1, x1, y0, z1, x1, y1, z1, x0, y1, z1, cFront);
+        Emit(x1, y0, z0, x0, y0, z0, x0, y1, z0, x1, y1, z0, cBack);
+        // 左右側面
+        Emit(x1, y0, z1, x1, y0, z0, x1, y1, z0, x1, y1, z1, cSide);
+        Emit(x0, y0, z0, x0, y0, z1, x0, y1, z1, x0, y1, z0, cSide);
+        quads += 6;
+        if (quads >= 900)
+        {
+            Rlgl.End();
+            Rlgl.Begin(DrawMode.Quads);
+            quads = 0;
+        }
+    }
+
+    private void PushTaperedPole(double wx, float wy, double wz, float rTop, float rBot, float h, Color baseCol, float dist, ref int quads)
+    {
+        Color c = scene.FogC(baseCol, dist);
+        Color cDark = scene.FogC(ShadeColor(baseCol, 0.85f), dist);
+        var pB0 = R(wx - rBot, wy, wz - rBot);
+        var pB1 = R(wx + rBot, wy, wz - rBot);
+        var pB2 = R(wx + rBot, wy, wz + rBot);
+        var pB3 = R(wx - rBot, wy, wz + rBot);
+        var pT0 = R(wx - rTop, wy + h, wz - rTop);
+        var pT1 = R(wx + rTop, wy + h, wz - rTop);
+        var pT2 = R(wx + rTop, wy + h, wz + rTop);
+        var pT3 = R(wx - rTop, wy + h, wz + rTop);
+
+        void Face(Vector3 a, Vector3 b, Vector3 d, Vector3 e, Color fc)
+        {
+            Rlgl.Color4ub(fc.R, fc.G, fc.B, 255);
+            Rlgl.Vertex3f(a.X, a.Y, a.Z);
+            Rlgl.Vertex3f(b.X, b.Y, b.Z);
+            Rlgl.Vertex3f(d.X, d.Y, d.Z);
+            Rlgl.Vertex3f(e.X, e.Y, e.Z);
+        }
+        Face(pB0, pB1, pT1, pT0, c);
+        Face(pB1, pB2, pT2, pT1, cDark);
+        Face(pB2, pB3, pT3, pT2, c);
+        Face(pB3, pB0, pT0, pT3, cDark);
+        quads += 4;
+        if (quads >= 900)
+        {
+            Rlgl.End();
+            Rlgl.Begin(DrawMode.Quads);
+            quads = 0;
+        }
+    }
+
+    private void DrawTrafficSignalBatched(double poleX, double poleZ, float baseY, double faceDx, double faceDz,
+        float armLen, float overhangDir, float poleH, float scale, int activeIdx, bool pedGreen,
+        bool drawNamePlaque, float dist, ref int quads, string? plaqueName = null)
+    {
+        var poleCol = Rgb(168, 172, 178);
+        var boxCol = Rgb(36, 40, 46);
+
+        // 支柱とアーム（すべて Quads バッチで一括描画し、PushMatrix/DrawSphere による負荷を無くす）
+        PushTaperedPole(poleX, baseY, poleZ, 0.13f * scale, 0.16f * scale, poleH, poleCol, dist, ref quads);
+        float armY = poleH - 0.55f * scale;
+        float hx = overhangDir * armLen;
+        PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, hx * 0.5f, armY, 0, armLen + 0.16f * scale, 0.14f * scale, 0.14f * scale, poleCol, dist, ref quads);
+
+        if (scale >= 0.9f && dist < 240f)
+        {
+            var lampCol = scene.Night ? Rgb(255, 224, 145) : Rgb(230, 234, 238);
+            PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, overhangDir * 0.65f, poleH + 0.12f, 0, 1.3f, 0.12f, 0.14f, poleCol, dist, ref quads);
+            PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, overhangDir * 1.22f, poleH + 0.02f, 0, 0.36f, 0.18f, 0.26f, lampCol, dist, ref quads, lit: scene.Night);
+        }
+
+        // 横型3灯式信号機（運転者から見て左から 青・黄・赤）
         float bw = 2.38f * scale, bh = 0.74f * scale, bd = 0.44f * scale;
-        var headPos = new Vector3(hx, armY, 0);
-        Raylib.DrawCube(headPos, bw, bh, bd, boxCol);
-        Raylib.DrawCube(new Vector3(hx, armY, bd * 0.44f), bw + 0.08f * scale, bh + 0.08f * scale, 0.05f * scale, scene.FogC(Rgb(200, 206, 214), dist));
-        Raylib.DrawCube(new Vector3(hx, armY, bd * 0.48f), bw - 0.06f * scale, bh - 0.06f * scale, 0.04f * scale, boxCol);
+        PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, hx, armY, 0, bw, bh, bd, boxCol, dist, ref quads);
+        if (dist < 220f)
+            PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, hx, armY, bd * 0.45f, bw + 0.08f * scale, bh + 0.08f * scale, 0.05f * scale, Rgb(200, 206, 214), dist, ref quads);
 
         float[] lx = { -0.74f * scale, 0f, 0.74f * scale };
         Color[] onCols = { Rgb(35, 240, 160), Rgb(255, 205, 30), Rgb(255, 45, 45) };
         Color[] offCols = { Rgb(22, 46, 40), Rgb(52, 42, 18), Rgb(52, 22, 22) };
         for (int li = 0; li < 3; li++)
         {
-            Color c = li == activeIdx ? scene.FogC(onCols[li], dist, lit: true) : scene.FogC(offCols[li], dist);
-            Raylib.DrawSphere(new Vector3(hx + lx[li], armY, bd * 0.48f), 0.24f * scale, c);
-            // 庇（ひさし）
-            Raylib.DrawCube(new Vector3(hx + lx[li], armY + 0.25f * scale, bd * 0.68f), 0.48f * scale, 0.08f * scale, 0.24f * scale, boxCol);
+            bool on = li == activeIdx;
+            if (!on && dist >= 165f) continue;
+            float lensS = (on ? 0.46f : 0.40f) * scale;
+            PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, hx + lx[li], armY, bd * 0.52f, lensS, lensS, 0.10f * scale, on ? onCols[li] : offCols[li], dist, ref quads, lit: on);
+            if (dist < 130f)
+                PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, hx + lx[li], armY + 0.25f * scale, bd * 0.68f, 0.48f * scale, 0.08f * scale, 0.24f * scale, boxCol, dist, ref quads);
         }
 
-        // 交差点名板（背面はアルミグレー、前面のみ白地に濃紺ライン）
-        if (drawNamePlaque)
+        // 交差点名板（近距離のみ）
+        if (drawNamePlaque && dist < 170f)
         {
-            float px = hx + overhangDir * 0.25f, py = armY - 0.64f * scale;
-            Raylib.DrawCube(new Vector3(px, py, 0.01f), 1.48f * scale, 0.36f * scale, 0.06f * scale, scene.FogC(Rgb(132, 138, 146), dist));
-            Raylib.DrawCube(new Vector3(px, py, 0.05f), 1.44f * scale, 0.32f * scale, 0.04f * scale, scene.FogC(Rgb(242, 244, 248), dist));
-            Raylib.DrawCube(new Vector3(px, py, 0.08f), 1.15f * scale, 0.11f * scale, 0.03f * scale, scene.FogC(Rgb(25, 55, 115), dist));
+            float px = hx + overhangDir * 0.25f, py = armY - 0.68f * scale;
+            PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, px, py, 0.01f, 2.02f * scale, 0.50f * scale, 0.06f * scale, Rgb(132, 138, 146), dist, ref quads);
+            PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, px, py, 0.05f, 1.96f * scale, 0.46f * scale, 0.04f * scale, Rgb(242, 244, 248), dist, ref quads);
+            if (!string.IsNullOrEmpty(plaqueName))
+            {
+                double nx = -faceDz, nz = faceDx;
+                double wx = poleX + nx * px + faceDx * 0.09, wz = poleZ + nz * px + faceDz * 0.09;
+                IntersectionPlaques.Add(new PlaqueLabel(
+                    R(wx, baseY + py, wz),
+                    plaqueName,
+                    new Vector3(-(float)faceDx, 0f, (float)faceDz),
+                    scale,
+                    dist));
+            }
+            else
+            {
+                PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, px, py, 0.08f, 1.50f * scale, 0.14f * scale, 0.03f * scale, Rgb(25, 55, 115), dist, ref quads);
+            }
         }
 
-        // 歩行者用信号機（柱の中腹）
-        if (scale >= 0.75f)
+        // 歩行者用信号機（柱の中腹、近距離のみ）
+        if (scale >= 0.75f && dist < 135f)
         {
             float pedY = 2.95f;
             float pDir = overhangDir > 0 ? 0.26f : -0.26f;
-            Raylib.DrawCube(new Vector3(pDir, pedY, 0), 0.36f, 0.72f, 0.28f, boxCol);
-            var pedRed = !pedGreen ? scene.FogC(Rgb(255, 55, 55), dist, lit: true) : scene.FogC(Rgb(55, 22, 22), dist);
-            var pedGrn = pedGreen ? scene.FogC(Rgb(45, 240, 155), dist, lit: true) : scene.FogC(Rgb(20, 48, 40), dist);
-            Raylib.DrawSphere(new Vector3(pDir, pedY + 0.17f, 0.14f), 0.11f, pedRed);
-            Raylib.DrawSphere(new Vector3(pDir, pedY - 0.17f, 0.14f), 0.11f, pedGrn);
+            PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, pDir, pedY, 0, 0.36f, 0.72f, 0.28f, boxCol, dist, ref quads);
+            var pedRed = !pedGreen ? Rgb(255, 55, 55) : Rgb(55, 22, 22);
+            var pedGrn = pedGreen ? Rgb(45, 240, 155) : Rgb(20, 48, 40);
+            PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, pDir, pedY + 0.17f, 0.16f, 0.20f, 0.20f, 0.06f, pedRed, dist, ref quads, lit: !pedGreen);
+            PushOrientedBox(poleX, baseY, poleZ, faceDx, faceDz, pDir, pedY - 0.17f, 0.16f, 0.20f, 0.20f, 0.06f, pedGrn, dist, ref quads, lit: pedGreen);
         }
-
-        Rlgl.PopMatrix();
     }
 
-    /// <summary>都市・町の内部に碁盤の目の一般道（街路と信号・横断歩道付き交差点）を描く。</summary>
-    private void DrawCityStreets(float time)
+    private StreetChunk EnsureStreetTopology(long cx, long cz)
     {
-        if (Altitude > 550) return;
+        var key = (cx, cz);
+        if (streetChunks.TryGetValue(key, out var cached)) return cached;
+
+        const int chunkBlocks = 4;
+        const int margin = 2;
         const double gridStep = CityCell * 2; // 88m間隔で街路を通す
-        const double sliceLen = 22;
+        double chunkWorldSize = ChunkWorldSize; // 352m
+        double centerX = (cx + 0.5) * chunkWorldSize;
+        double centerZ = (cz + 0.5) * chunkWorldSize;
+
+        double searchR = (chunkBlocks * 0.5 + margin + 1) * gridStep;
+        var localPlaces = new List<Place>();
+        foreach (var pl in Places)
+        {
+            double lim = pl.Radius + searchR;
+            if (Math.Abs(pl.X - centerX) <= lim && Math.Abs(pl.Z - centerZ) <= lim)
+                localPlaces.Add(pl);
+        }
+        if (localPlaces.Count == 0)
+        {
+            var empty = new StreetChunk { OriginX = centerX, OriginZ = centerZ, Kx0 = cx * chunkBlocks, Kz0 = cz * chunkBlocks, Meshes = Array.Empty<Mesh>() };
+            streetChunks[key] = empty;
+            return empty;
+        }
+
+        var localRivers = new List<RiverRibbon>();
+        foreach (var r in rivers)
+        {
+            double reach = r.MaxHalfW + 20.0;
+            if (r.MaxX + reach >= centerX - searchR && r.MinX - reach <= centerX + searchR
+                && r.MaxZ + reach >= centerZ - searchR && r.MinZ - reach <= centerZ + searchR)
+                localRivers.Add(r);
+        }
+
+        const int size = chunkBlocks + margin * 2 + 1; // 9x9 交点
+        long kxBase = cx * chunkBlocks - margin;
+        long kzBase = cz * chunkBlocks - margin;
+
+        var nodeValid = new bool[size, size];
+        for (int u = 0; u < size; u++)
+        {
+            long kx = kxBase + u;
+            double x = kx * gridStep;
+            for (int v = 0; v < size; v++)
+            {
+                long kz = kzBase + v;
+                var nKey = (kx, kz);
+                if (!streetNodeClearCache.TryGetValue(nKey, out bool ok))
+                {
+                    ok = IsStreetPointClear(x, kz * gridStep, localPlaces, localRivers, 0.91);
+                    streetNodeClearCache[nKey] = ok;
+                }
+                nodeValid[u, v] = ok;
+            }
+        }
+
+        var hRaw = new bool[size - 1, size];
+        var vRaw = new bool[size, size - 1];
+        for (int u = 0; u < size; u++)
+        {
+            long kx = kxBase + u;
+            double x = kx * gridStep;
+            for (int v = 0; v < size; v++)
+            {
+                long kz = kzBase + v;
+                double z = kz * gridStep;
+                if (u + 1 < size && nodeValid[u, v] && nodeValid[u + 1, v])
+                {
+                    var eKey = (kx, kz, true);
+                    if (!streetEdgeRawCache.TryGetValue(eKey, out bool ok))
+                    {
+                        ok = true;
+                        for (int s = 1; s < 8 && ok; s++)
+                            if (!IsStreetPointClear(x + s * (gridStep / 8.0), z, localPlaces, localRivers, 0.94)) ok = false;
+                        streetEdgeRawCache[eKey] = ok;
+                    }
+                    hRaw[u, v] = ok;
+                }
+                if (v + 1 < size && nodeValid[u, v] && nodeValid[u, v + 1])
+                {
+                    var eKey = (kx, kz, false);
+                    if (!streetEdgeRawCache.TryGetValue(eKey, out bool ok))
+                    {
+                        ok = true;
+                        for (int s = 1; s < 8 && ok; s++)
+                            if (!IsStreetPointClear(x, z + s * (gridStep / 8.0), localPlaces, localRivers, 0.94)) ok = false;
+                        streetEdgeRawCache[eKey] = ok;
+                    }
+                    vRaw[u, v] = ok;
+                }
+            }
+        }
+
+        // 1ブロックだけ突き出た袋小路と孤立枝を1段階で刈り込み、海岸・川岸の街路は残しつつ不自然な切れ端をなくす
+        var hPeel = (bool[,])hRaw.Clone();
+        var vPeel = (bool[,])vRaw.Clone();
+        var toClear = new List<(int U, int V, int Dir)>();
+        for (int u = 1; u < size - 1; u++)
+        {
+            for (int v = 1; v < size - 1; v++)
+            {
+                bool e = hPeel[u, v], w = hPeel[u - 1, v], n = vPeel[u, v], s = vPeel[u, v - 1];
+                int deg = (e ? 1 : 0) + (w ? 1 : 0) + (n ? 1 : 0) + (s ? 1 : 0);
+                if (deg == 1)
+                    toClear.Add((u, v, e ? 0 : w ? 1 : n ? 2 : 3));
+            }
+        }
+        foreach (var (u, v, dir) in toClear)
+        {
+            if (dir == 0) hPeel[u, v] = false;
+            else if (dir == 1) hPeel[u - 1, v] = false;
+            else if (dir == 2) vPeel[u, v] = false;
+            else vPeel[u, v - 1] = false;
+        }
+
+        // 細長い町など3本以上つながるループを持たない成分だけは元の道を残し、1〜2本だけの孤立枝は消す
+        var compId = new int[size, size];
+        var compKeepPeel = new List<bool> { true };
+        var q = new Queue<(int U, int V)>();
+        for (int u = 0; u < size; u++)
+        {
+            for (int v = 0; v < size; v++)
+            {
+                if (compId[u, v] != 0) continue;
+                bool hasInc = (u < size - 1 && hRaw[u, v]) || (u > 0 && hRaw[u - 1, v])
+                    || (v < size - 1 && vRaw[u, v]) || (v > 0 && vRaw[u, v - 1]);
+                if (!hasInc) continue;
+                int cid = compKeepPeel.Count;
+                bool hasSurvivor = false;
+                int edgeDoubles = 0;
+                compId[u, v] = cid;
+                q.Enqueue((u, v));
+                while (q.Count > 0)
+                {
+                    var (cu, cv) = q.Dequeue();
+                    if ((cu < size - 1 && hPeel[cu, cv]) || (cu > 0 && hPeel[cu - 1, cv])
+                        || (cv < size - 1 && vPeel[cu, cv]) || (cv > 0 && vPeel[cu, cv - 1]))
+                        hasSurvivor = true;
+
+                    void Visit(int nu, int nv)
+                    {
+                        if (compId[nu, nv] == 0) { compId[nu, nv] = cid; q.Enqueue((nu, nv)); }
+                    }
+                    if (cu + 1 < size && hRaw[cu, cv]) { edgeDoubles++; Visit(cu + 1, cv); }
+                    if (cu > 0 && hRaw[cu - 1, cv]) { edgeDoubles++; Visit(cu - 1, cv); }
+                    if (cv + 1 < size && vRaw[cu, cv]) { edgeDoubles++; Visit(cu, cv + 1); }
+                    if (cv > 0 && vRaw[cu, cv - 1]) { edgeDoubles++; Visit(cu, cv - 1); }
+                }
+                int edgeCount = edgeDoubles / 2;
+                compKeepPeel.Add(hasSurvivor || edgeCount <= 2);
+            }
+        }
+
+        var hFinal = new bool[size - 1, size];
+        var vFinal = new bool[size, size - 1];
+        for (int u = 0; u < size; u++)
+        {
+            for (int v = 0; v < size; v++)
+            {
+                int cid = compId[u, v];
+                bool usePeel = cid > 0 && compKeepPeel[cid];
+                if (u + 1 < size) hFinal[u, v] = usePeel ? hPeel[u, v] : hRaw[u, v];
+                if (v + 1 < size) vFinal[u, v] = usePeel ? vPeel[u, v] : vRaw[u, v];
+            }
+        }
+
+        int DegreeAt(int u, int v) =>
+            (hFinal[u, v] ? 1 : 0) + (hFinal[u - 1, v] ? 1 : 0) + (vFinal[u, v] ? 1 : 0) + (vFinal[u, v - 1] ? 1 : 0);
+
         const double roadHW = 3.8;
         const double walkHW = 5.2;
         const double jHalf = 5.2;
         const double chamfer = 0.85;
-
         var streetCol = Rgb(80, 82, 88);
         var walkCol = Rgb(172, 172, 168);
         var curbCol = Rgb(126, 128, 134);
         var white = Rgb(236, 236, 236);
         var amber = Rgb(245, 170, 28);
 
-        var streetProps = new List<(double X, double Z, int Kx, int Kz, bool N, bool S, bool E, bool W)>();
+        var quads = new List<BakedQuad>(512);
+        var props = new List<StreetPropNode>(16);
+
+        void AddQ(double x0, float y0, double z0, double x1, float y1, double z1,
+            double x2, float y2, double z2, double x3, float y3, double z3, Color c) =>
+            quads.Add(new BakedQuad(x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, c, false));
 
         void StripOnFrame(double ox, double oz, double dx, double dz, double nx, double nz,
             double d0, double d1, double w0, double w1, float dy, Color c)
@@ -2456,276 +3852,369 @@ public sealed class FreeWorld
             double p1x = ax + nx * w1, p1z = az + nz * w1;
             double p2x = bx + nx * w1, p2z = bz + nz * w1;
             double p3x = bx + nx * w0, p3z = bz + nz * w0;
-            V(p0x, StreetY(p0x, p0z) + dy, p0z, c);
-            V(p1x, StreetY(p1x, p1z) + dy, p1z, c);
-            V(p2x, StreetY(p2x, p2z) + dy, p2z, c);
-            V(p3x, StreetY(p3x, p3z) + dy, p3z, c);
+            AddQ(p0x, StreetY(p0x, p0z) + dy, p0z,
+                 p1x, StreetY(p1x, p1z) + dy, p1z,
+                 p2x, StreetY(p2x, p2z) + dy, p2z,
+                 p3x, StreetY(p3x, p3z) + dy, p3z, c);
         }
 
         void CurbWall(double p0x, double p0z, double p1x, double p1z, float hTop, Color c)
         {
             float y0 = StreetY(p0x, p0z), y1 = StreetY(p1x, p1z);
-            V(p0x, y0, p0z, c);
-            V(p0x, y0 + hTop, p0z, c);
-            V(p1x, y1 + hTop, p1z, c);
-            V(p1x, y1, p1z, c);
+            AddQ(p0x, y0, p0z, p0x, y0 + hTop, p0z, p1x, y1 + hTop, p1z, p1x, y1, p1z, c);
         }
 
-        void DrawGridSlice(Place pl, double ox, double oz, double dx, double dz, double len, bool isFirstSlice, bool isLastSlice, bool hasStartJct, bool hasEndJct)
+        void BakeFullEdge(double ox, double oz, double dx, double dz, int degStart, int degEnd)
         {
-            double a = isFirstSlice && hasStartJct ? jHalf : 0;
-            double b = isLastSlice && hasEndJct ? len - jHalf : len;
-            if (b <= a + 0.4) return;
-            double mx = ox + dx * ((a + b) * 0.5), mz = oz + dz * ((a + b) * 0.5);
-            double ax = ox + dx * a, az = oz + dz * a;
-            double bx = ox + dx * b, bz = oz + dz * b;
-            if (!IsStreetClear(pl, mx, mz) || !IsStreetClear(pl, ax, az) || !IsStreetClear(pl, bx, bz)) return;
-            if (NearRoadDistance(ox + dx * ((a + b) * 0.25 + a * 0.5), oz + dz * ((a + b) * 0.25 + a * 0.5)) < 15.8) return;
-
             double nx = -dz, nz = dx;
-            // 車道本体と左右の白線
-            StripOnFrame(ox, oz, dx, dz, nx, nz, a, b, -roadHW, roadHW, 0f, streetCol);
-            StripOnFrame(ox, oz, dx, dz, nx, nz, a, b, -roadHW + 0.12, -roadHW + 0.28, 0.022f, white);
-            StripOnFrame(ox, oz, dx, dz, nx, nz, a, b, roadHW - 0.28, roadHW - 0.12, 0.022f, white);
+            double a = jHalf, b = gridStep - jHalf;
+            float yA = StreetY(ox + dx * a, oz + dz * a);
+            float yM = StreetY(ox + dx * (gridStep * 0.5), oz + dz * (gridStep * 0.5));
+            float yB = StreetY(ox + dx * b, oz + dz * b);
+            bool flat = Math.Abs(yA - yB) < 0.04f && Math.Abs(yM - (yA + yB) * 0.5f) < 0.04f;
+            float baseY = (yA + yB) * 0.5f;
 
-            // 左右の立ち上げ歩道と縁石（交差点の十字路側へははみ出させない）
-            StripOnFrame(ox, oz, dx, dz, nx, nz, a, b, -walkHW, -roadHW, 0.11f, walkCol);
-            StripOnFrame(ox, oz, dx, dz, nx, nz, a, b, roadHW, walkHW, 0.11f, walkCol);
-            CurbWall(ax - nx * roadHW, az - nz * roadHW, bx - nx * roadHW, bz - nz * roadHW, 0.11f, curbCol);
-            CurbWall(ax + nx * roadHW, az + nz * roadHW, bx + nx * roadHW, bz + nz * roadHW, 0.11f, curbCol);
+            void StripAuto(double d0, double d1, double w0, double w1, float dy, Color c)
+            {
+                if (!flat) { StripOnFrame(ox, oz, dx, dz, nx, nz, d0, d1, w0, w1, dy, c); return; }
+                double ax = ox + dx * d0, az = oz + dz * d0;
+                double bx = ox + dx * d1, bz = oz + dz * d1;
+                float yt = baseY + dy;
+                AddQ(ax + nx * w0, yt, az + nz * w0,
+                     ax + nx * w1, yt, az + nz * w1,
+                     bx + nx * w1, yt, bz + nz * w1,
+                     bx + nx * w0, yt, bz + nz * w0, c);
+            }
 
-            // 中央線：交差点手前はオレンジの実線、ブロック中央は破線
-            if (isFirstSlice && hasStartJct)
+            int subSegs = flat ? 1 : 4;
+            double segL = (b - a) / subSegs;
+            for (int k = 0; k < subSegs; k++)
             {
-                if (b > 8.2)
-                    StripOnFrame(ox, oz, dx, dz, nx, nz, Math.Max(a, 7.7), Math.Min(b, 15.5), -0.09, 0.09, 0.025f, amber);
-                if (b > 17.5)
-                    StripOnFrame(ox, oz, dx, dz, nx, nz, 17.5, Math.Min(b, 22.0), -0.08, 0.08, 0.024f, white);
+                double sa = a + k * segL, sb = a + (k + 1) * segL;
+                StripAuto(sa, sb, -roadHW, roadHW, 0f, streetCol);
+                StripAuto(sa, sb, -roadHW + 0.12, -roadHW + 0.28, 0.022f, white);
+                StripAuto(sa, sb, roadHW - 0.28, roadHW - 0.12, 0.022f, white);
+                StripAuto(sa, sb, -walkHW, -roadHW, 0.11f, walkCol);
+                StripAuto(sa, sb, roadHW, walkHW, 0.11f, walkCol);
+                double sax = ox + dx * sa, saz = oz + dz * sa;
+                double sbx = ox + dx * sb, sbz = oz + dz * sb;
+                if (flat)
+                {
+                    AddQ(sax - nx * roadHW, baseY, saz - nz * roadHW,
+                         sax - nx * roadHW, baseY + 0.11f, saz - nz * roadHW,
+                         sbx - nx * roadHW, baseY + 0.11f, sbz - nz * roadHW,
+                         sbx - nx * roadHW, baseY, sbz - nz * roadHW, curbCol);
+                    AddQ(sax + nx * roadHW, baseY, saz + nz * roadHW,
+                         sax + nx * roadHW, baseY + 0.11f, saz + nz * roadHW,
+                         sbx + nx * roadHW, baseY + 0.11f, sbz + nz * roadHW,
+                         sbx + nx * roadHW, baseY, sbz + nz * roadHW, curbCol);
+                }
+                else
+                {
+                    CurbWall(sax - nx * roadHW, saz - nz * roadHW, sbx - nx * roadHW, sbz - nz * roadHW, 0.11f, curbCol);
+                    CurbWall(sax + nx * roadHW, saz + nz * roadHW, sbx + nx * roadHW, sbz + nz * roadHW, 0.11f, curbCol);
+                }
             }
-            else if (isLastSlice && hasEndJct)
-            {
-                if (b > 5.0)
-                    StripOnFrame(ox, oz, dx, dz, nx, nz, Math.Max(a, 0.0), Math.Min(b, 4.5), -0.08, 0.08, 0.024f, white);
-                if (b > 7.5)
-                    StripOnFrame(ox, oz, dx, dz, nx, nz, Math.Max(a, 6.5), Math.Min(b, len - 7.7), -0.09, 0.09, 0.025f, amber);
-            }
-            else
-            {
-                StripOnFrame(ox, oz, dx, dz, nx, nz, a + 1.0, Math.Min(b, a + 6.5), -0.08, 0.08, 0.024f, white);
-                StripOnFrame(ox, oz, dx, dz, nx, nz, a + 12.0, Math.Min(b, a + 17.5), -0.08, 0.08, 0.024f, white);
-            }
+
+            if (degStart >= 3)
+                StripAuto(7.7, 15.5, -0.09, 0.09, 0.025f, amber);
+            else if (degStart == 2)
+                StripAuto(7.5, 13.5, -0.08, 0.08, 0.024f, white);
+
+            double[] dashes = { 18.0, 30.0, 41.0, 52.0, 64.0 };
+            foreach (double ds in dashes)
+                StripAuto(ds, ds + 6.0, -0.08, 0.08, 0.024f, white);
+
+            if (degEnd >= 3)
+                StripAuto(gridStep - 15.5, gridStep - 7.7, -0.09, 0.09, 0.025f, amber);
+            else if (degEnd == 2)
+                StripAuto(gridStep - 13.5, gridStep - 7.5, -0.08, 0.08, 0.024f, white);
         }
 
-        Rlgl.Begin(DrawMode.Quads);
-        foreach (var pl in Places)
+        for (int u = margin; u < margin + chunkBlocks; u++)
         {
-            double maxRange = pl.Radius + Math.Min(900, ViewRadius);
-            if ((pl.X - PX) * (pl.X - PX) + (pl.Z - PZ) * (pl.Z - PZ) > maxRange * maxRange) continue;
-
-            int lines = (int)(pl.Radius * 0.88 / gridStep);
-            int slices = (int)(pl.Radius * 0.88 / sliceLen);
-
-            // 1) 南北・東西の中間街路（交差点の間を歩道付きで繋ぐ）
-            for (int k = -lines; k <= lines; k++)
+            long kx = kxBase + u;
+            double ix = kx * gridStep;
+            for (int v = margin; v < margin + chunkBlocks; v++)
             {
-                double sx = pl.X + k * gridStep;
-                if (Math.Abs(sx - PX) <= 750)
+                long kz = kzBase + v;
+                double iz = kz * gridStep;
+
+                bool hasE = hFinal[u, v], hasW = hFinal[u - 1, v], hasN = vFinal[u, v], hasS = vFinal[u, v - 1];
+                int arms = (hasN ? 1 : 0) + (hasS ? 1 : 0) + (hasE ? 1 : 0) + (hasW ? 1 : 0);
+
+                // 1) このノードから東(+X)・北(+Z)へ伸びる完全な88m街路
+                if (hasE) BakeFullEdge(ix, iz, 1, 0, arms, DegreeAt(u + 1, v));
+                if (hasN) BakeFullEdge(ix, iz, 0, 1, arms, DegreeAt(u, v + 1));
+
+                if (arms == 0) continue;
+
+                // 2) 交差点本体（全開放アームが実際の街路と1対1対応するため途切れない）
+                bool straightNS = arms == 2 && hasN && hasS;
+                bool straightEW = arms == 2 && hasE && hasW;
+
+                if (straightNS || straightEW)
                 {
-                    for (int s = -slices; s < slices; s++)
+                    double dx = straightNS ? 0 : 1, dz = straightNS ? 1 : 0;
+                    double nx = -dz, nz = dx;
+                    StripOnFrame(ix, iz, dx, dz, nx, nz, -jHalf, jHalf, -roadHW, roadHW, 0f, streetCol);
+                    StripOnFrame(ix, iz, dx, dz, nx, nz, -jHalf, jHalf, -roadHW + 0.12, -roadHW + 0.28, 0.022f, white);
+                    StripOnFrame(ix, iz, dx, dz, nx, nz, -jHalf, jHalf, roadHW - 0.28, roadHW - 0.12, 0.022f, white);
+                    StripOnFrame(ix, iz, dx, dz, nx, nz, -jHalf, jHalf, -walkHW, -roadHW, 0.11f, walkCol);
+                    StripOnFrame(ix, iz, dx, dz, nx, nz, -jHalf, jHalf, roadHW, walkHW, 0.11f, walkCol);
+                    CurbWall(ix - dx * jHalf - nx * roadHW, iz - dz * jHalf - nz * roadHW,
+                             ix + dx * jHalf - nx * roadHW, iz + dz * jHalf - nz * roadHW, 0.11f, curbCol);
+                    CurbWall(ix - dx * jHalf + nx * roadHW, iz - dz * jHalf + nz * roadHW,
+                             ix + dx * jHalf + nx * roadHW, iz + dz * jHalf + nz * roadHW, 0.11f, curbCol);
+                    StripOnFrame(ix, iz, dx, dz, nx, nz, -3.0, 3.0, -0.08, 0.08, 0.024f, white);
+                    continue;
+                }
+
+                // 中央アスファルト広場
+                StripOnFrame(ix, iz, 0, 1, -1, 0, -roadHW, roadHW, -roadHW, roadHW, 0f, streetCol);
+
+                // 4隅の歩道クワッド（外角が両方閉じているL字外側は角切りせず綺麗に繋ぐ）
+                for (int sxSign = -1; sxSign <= 1; sxSign += 2)
+                {
+                    for (int szSign = -1; szSign <= 1; szSign += 2)
                     {
-                        double z0 = pl.Z + s * sliceLen;
-                        if (Math.Abs(z0 + sliceLen * 0.5 - PZ) > 750) continue;
-                        int mod = ((s % 4) + 4) % 4;
-                        bool first = mod == 0, last = mod == 3;
-                        bool hasS = first && IsStreetClear(pl, sx, z0);
-                        bool hasE = last && IsStreetClear(pl, sx, z0 + sliceLen);
-                        DrawGridSlice(pl, sx, z0, 0, 1, sliceLen, first, last, hasS, hasE);
+                        bool xOpen = sxSign > 0 ? hasE : hasW;
+                        bool zOpen = szSign > 0 ? hasN : hasS;
+                        double xIn = ix + sxSign * roadHW, xOut = ix + sxSign * walkHW;
+                        double zIn = iz + szSign * roadHW, zOut = iz + szSign * walkHW;
+
+                        if (!xOpen && !zOpen)
+                        {
+                            AddQ(xIn, StreetY(xIn, zIn) + 0.11f, zIn,
+                                 xOut, StreetY(xOut, zIn) + 0.11f, zIn,
+                                 xOut, StreetY(xOut, zOut) + 0.11f, zOut,
+                                 xIn, StreetY(xIn, zOut) + 0.11f, zOut, walkCol);
+                            continue;
+                        }
+
+                        double xCut = ix + sxSign * (roadHW + chamfer);
+                        double zCut = iz + szSign * (roadHW + chamfer);
+
+                        AddQ(xIn, StreetY(xIn, zIn), zIn,
+                             xCut, StreetY(xCut, zIn), zIn,
+                             xIn, StreetY(xIn, zCut), zCut,
+                             xIn, StreetY(xIn, zIn), zIn, streetCol);
+
+                        AddQ(xCut, StreetY(xCut, zIn) + 0.11f, zIn,
+                             xOut, StreetY(xOut, zIn) + 0.11f, zIn,
+                             xOut, StreetY(xOut, zOut) + 0.11f, zOut,
+                             xCut, StreetY(xCut, zCut) + 0.11f, zCut, walkCol);
+
+                        AddQ(xIn, StreetY(xIn, zCut) + 0.11f, zCut,
+                             xCut, StreetY(xCut, zCut) + 0.11f, zCut,
+                             xOut, StreetY(xOut, zOut) + 0.11f, zOut,
+                             xIn, StreetY(xIn, zOut) + 0.11f, zOut, walkCol);
+
+                        CurbWall(xCut, zIn, xIn, zCut, 0.11f, curbCol);
                     }
                 }
 
-                double sz = pl.Z + k * gridStep;
-                if (Math.Abs(sz - PZ) <= 750)
+                void DrawCardinalLeg(double dx, double dz, bool open)
                 {
-                    for (int s = -slices; s < slices; s++)
+                    double nx = -dz, nz = dx;
+                    if (open)
                     {
-                        double x0 = pl.X + s * sliceLen;
-                        if (Math.Abs(x0 + sliceLen * 0.5 - PX) > 750) continue;
-                        int mod = ((s % 4) + 4) % 4;
-                        bool first = mod == 0, last = mod == 3;
-                        bool hasS = first && IsStreetClear(pl, x0, sz);
-                        bool hasE = last && IsStreetClear(pl, x0 + sliceLen, sz);
-                        DrawGridSlice(pl, x0, sz, 1, 0, sliceLen, first, last, hasS, hasE);
+                        StripOnFrame(ix, iz, dx, dz, nx, nz, roadHW, jHalf, -roadHW, roadHW, 0f, streetCol);
+                        if (arms == 2)
+                        {
+                            // L字コーナーの白線接続
+                            bool leftOpen = (dx > 0 && hasN) || (dx < 0 && hasS) || (dz > 0 && hasW) || (dz < 0 && hasE);
+                            bool rightOpen = (dx > 0 && hasS) || (dx < 0 && hasN) || (dz > 0 && hasE) || (dz < 0 && hasW);
+                            if (!leftOpen) StripOnFrame(ix, iz, dx, dz, nx, nz, roadHW, jHalf, roadHW - 0.28, roadHW - 0.12, 0.022f, white);
+                            if (!rightOpen) StripOnFrame(ix, iz, dx, dz, nx, nz, roadHW, jHalf, -roadHW + 0.12, -roadHW + 0.28, 0.022f, white);
+                        }
+                        else if (arms >= 3)
+                        {
+                            for (int st = -2; st <= 2; st++)
+                                StripOnFrame(ix, iz, dx, dz, nx, nz, 4.0, 6.4, st * 1.45 - 0.36, st * 1.45 + 0.36, 0.025f, white);
+                            StripOnFrame(ix, iz, dx, dz, nx, nz, 7.05, 7.50, -3.55, -0.22, 0.025f, white);
+                        }
                     }
+                    else
+                    {
+                        StripOnFrame(ix, iz, dx, dz, nx, nz, roadHW, jHalf, -roadHW, roadHW, 0.11f, walkCol);
+                        StripOnFrame(ix, iz, dx, dz, nx, nz, roadHW - 0.28, roadHW - 0.12, -roadHW + 0.12, roadHW - 0.12, 0.022f, white);
+                        CurbWall(ix + dx * roadHW - nx * roadHW, iz + dz * roadHW - nz * roadHW,
+                                 ix + dx * roadHW + nx * roadHW, iz + dz * roadHW + nz * roadHW, 0.11f, curbCol);
+                    }
+                }
+
+                DrawCardinalLeg(0, 1, hasN);
+                DrawCardinalLeg(0, -1, hasS);
+                DrawCardinalLeg(1, 0, hasE);
+                DrawCardinalLeg(-1, 0, hasW);
+
+                if (arms >= 3)
+                {
+                    double rOut = 1.45, rIn = 1.15;
+                    for (int qIdx = 0; qIdx < 4; qIdx++)
+                    {
+                        double a0 = qIdx * Math.PI * 0.5, a1 = (qIdx + 1) * Math.PI * 0.5;
+                        double ax0 = ix + Math.Sin(a0) * rIn, az0 = iz + Math.Cos(a0) * rIn;
+                        double bx0 = ix + Math.Sin(a0) * rOut, bz0 = iz + Math.Cos(a0) * rOut;
+                        double bx1 = ix + Math.Sin(a1) * rOut, bz1 = iz + Math.Cos(a1) * rOut;
+                        double ax1 = ix + Math.Sin(a1) * rIn, az1 = iz + Math.Cos(a1) * rIn;
+                        AddQ(ax0, StreetY(ax0, az0) + 0.025f, az0,
+                             bx0, StreetY(bx0, bz0) + 0.025f, bz0,
+                             bx1, StreetY(bx1, bz1) + 0.025f, bz1,
+                             ax1, StreetY(ax1, az1) + 0.025f, az1, white);
+                    }
+
+                    if (FullRoadDistance(ix, iz) >= 22.0)
+                        props.Add(new StreetPropNode(ix, iz, kx, kz, hasN, hasS, hasE, hasW, (kx & 1) == 0 && (kz & 1) == 0));
                 }
             }
+        }
 
-            // 2) 碁盤目の交差点（十字路・T字路：角切り歩道・横断歩道・左側停止線・中央ダイヤ）
-            int jLines = (int)(pl.Radius * 0.85 / gridStep);
-            for (int kx = -jLines; kx <= jLines; kx++)
+        var hGrid = new bool[chunkBlocks, chunkBlocks];
+        var vGrid = new bool[chunkBlocks, chunkBlocks];
+        bool hasAnyEdge = false;
+        for (int a = 0; a < chunkBlocks; a++)
+        {
+            for (int b = 0; b < chunkBlocks; b++)
             {
-                double ix = pl.X + kx * gridStep;
-                if (Math.Abs(ix - PX) > 750) continue;
-                for (int kz = -jLines; kz <= jLines; kz++)
+                bool he = hFinal[margin + a, margin + b];
+                bool ve = vFinal[margin + a, margin + b];
+                hGrid[a, b] = he;
+                vGrid[a, b] = ve;
+                if (he || ve) hasAnyEdge = true;
+            }
+        }
+
+        var chunk = new StreetChunk
+        {
+            OriginX = centerX,
+            OriginZ = centerZ,
+            Kx0 = cx * chunkBlocks,
+            Kz0 = cz * chunkBlocks,
+            HasStreets = hasAnyEdge,
+            HGrid = hGrid,
+            VGrid = vGrid,
+            PendingQuads = quads,
+            Meshes = quads.Count == 0 ? Array.Empty<Mesh>() : null,
+            Props = props.ToArray(),
+        };
+        streetChunks[key] = chunk;
+        return chunk;
+    }
+
+    /// <summary>都市・町の内部に碁盤の目の一般道（街路と信号・横断歩道付き交差点）を描く。</summary>
+    private void DrawCityStreets(float time)
+    {
+        if (Altitude > 550) return;
+        const double maxRange = 760.0;
+        long cx0 = FloorDiv((long)Math.Floor((PX - maxRange) / ChunkWorldSize), 1);
+        long cx1 = FloorDiv((long)Math.Floor((PX + maxRange) / ChunkWorldSize), 1);
+        long cz0 = FloorDiv((long)Math.Floor((PZ - maxRange) / ChunkWorldSize), 1);
+        long cz1 = FloorDiv((long)Math.Floor((PZ + maxRange) / ChunkWorldSize), 1);
+
+        var streetProps = new List<StreetPropNode>();
+        BeginChunkShaderPass();
+        for (long cx = cx0; cx <= cx1; cx++)
+        {
+            double minX = cx * ChunkWorldSize, maxX = minX + ChunkWorldSize;
+            double clX = Math.Clamp(PX, minX, maxX) - PX;
+            for (long cz = cz0; cz <= cz1; cz++)
+            {
+                double minZ = cz * ChunkWorldSize, maxZ = minZ + ChunkWorldSize;
+                double clZ = Math.Clamp(PZ, minZ, maxZ) - PZ;
+                if (clX * clX + clZ * clZ > maxRange * maxRange) continue;
+
+                var chunk = EnsureStreetTopology(cx, cz);
+                if (chunk.Meshes == null)
                 {
-                    double iz = pl.Z + kz * gridStep;
-                    if (Math.Abs(iz - PZ) > 750) continue;
-                    if (!IsStreetClear(pl, ix, iz)) continue;
+                    chunk.Meshes = chunk.PendingQuads is { Count: > 0 }
+                        ? BuildChunkMeshes(chunk.OriginX, chunk.OriginZ, chunk.PendingQuads, new List<BakedTri>(0))
+                        : Array.Empty<Mesh>();
+                    chunk.PendingQuads = null;
+                }
+                if (chunk.Meshes.Length > 0)
+                    DrawChunkMeshes(chunk.OriginX, chunk.OriginZ, chunk.Meshes);
 
-                    bool hasN = IsStreetClear(pl, ix, iz + 11.0);
-                    bool hasS = IsStreetClear(pl, ix, iz - 11.0);
-                    bool hasE = IsStreetClear(pl, ix + 11.0, iz);
-                    bool hasW = IsStreetClear(pl, ix - 11.0, iz);
-                    int arms = (hasN ? 1 : 0) + (hasS ? 1 : 0) + (hasE ? 1 : 0) + (hasW ? 1 : 0);
-                    if (arms == 0) continue;
-
-                    // 中央アスファルト広場
-                    StripOnFrame(ix, iz, 0, 1, -1, 0, -roadHW, roadHW, -roadHW, roadHW, 0f, streetCol);
-
-                    // 4隅の角切り歩道クワッド
-                    for (int sxSign = -1; sxSign <= 1; sxSign += 2)
+                if (Altitude < 240 && chunk.Props.Length > 0)
+                {
+                    foreach (var sp in chunk.Props)
                     {
-                        for (int szSign = -1; szSign <= 1; szSign += 2)
-                        {
-                            double xIn = ix + sxSign * roadHW, xCut = ix + sxSign * (roadHW + chamfer), xOut = ix + sxSign * walkHW;
-                            double zIn = iz + szSign * roadHW, zCut = iz + szSign * (roadHW + chamfer), zOut = iz + szSign * walkHW;
-
-                            // 角切り下地のアスファルト三角形（隙間防止）
-                            V(xIn, StreetY(xIn, zIn), zIn, streetCol);
-                            V(xCut, StreetY(xCut, zIn), zIn, streetCol);
-                            V(xIn, StreetY(xIn, zCut), zCut, streetCol);
-                            V(xIn, StreetY(xIn, zIn), zIn, streetCol);
-
-                            // 角切りされた立ち上げ歩道上面（+0.11m）
-                            V(xCut, StreetY(xCut, zIn) + 0.11f, zIn, walkCol);
-                            V(xOut, StreetY(xOut, zIn) + 0.11f, zIn, walkCol);
-                            V(xOut, StreetY(xOut, zOut) + 0.11f, zOut, walkCol);
-                            V(xCut, StreetY(xCut, zCut) + 0.11f, zCut, walkCol);
-
-                            V(xIn, StreetY(xIn, zCut) + 0.11f, zCut, walkCol);
-                            V(xCut, StreetY(xCut, zCut) + 0.11f, zCut, walkCol);
-                            V(xOut, StreetY(xOut, zOut) + 0.11f, zOut, walkCol);
-                            V(xIn, StreetY(xIn, zOut) + 0.11f, zOut, walkCol);
-
-                            // 斜めの縁石立面
-                            CurbWall(xCut, zIn, xIn, zCut, 0.11f, curbCol);
-                        }
-                    }
-
-                    // 4方向アームの接続部・横断歩道・左側停止線
-                    void DrawCardinalLeg(double dx, double dz, bool open)
-                    {
-                        double nx = -dz, nz = dx;
-                        if (open)
-                        {
-                            StripOnFrame(ix, iz, dx, dz, nx, nz, roadHW, jHalf, -roadHW, roadHW, 0f, streetCol);
-                            if (arms >= 2)
-                            {
-                                // 横断歩道（5本の白帯）
-                                for (int st = -2; st <= 2; st++)
-                                    StripOnFrame(ix, iz, dx, dz, nx, nz, 4.0, 6.4, st * 1.45 - 0.36, st * 1.45 + 0.36, 0.025f, white);
-                                // 停止線（進行方向左側 = -nx 側）
-                                StripOnFrame(ix, iz, dx, dz, nx, nz, 7.05, 7.50, -3.55, -0.22, 0.025f, white);
-                            }
-                        }
-                        else
-                        {
-                            // T字路などの行き止まり側は縁石と歩道で綺麗に閉じる
-                            StripOnFrame(ix, iz, dx, dz, nx, nz, roadHW, jHalf, -roadHW, roadHW, 0.11f, walkCol);
-                            StripOnFrame(ix, iz, dx, dz, nx, nz, roadHW - 0.32, roadHW - 0.12, -roadHW, roadHW, 0.022f, white);
-                            CurbWall(ix + dx * roadHW - nx * roadHW, iz + dz * roadHW - nz * roadHW,
-                                     ix + dx * roadHW + nx * roadHW, iz + dz * roadHW + nz * roadHW, 0.11f, curbCol);
-                        }
-                    }
-
-                    DrawCardinalLeg(0, 1, hasN);
-                    DrawCardinalLeg(0, -1, hasS);
-                    DrawCardinalLeg(1, 0, hasE);
-                    DrawCardinalLeg(-1, 0, hasW);
-
-                    // 交差点中心のひし形マーク（3方向以上）
-                    if (arms >= 3)
-                    {
-                        double rOut = 1.45, rIn = 1.15;
-                        for (int q = 0; q < 4; q++)
-                        {
-                            double a0 = q * Math.PI * 0.5, a1 = (q + 1) * Math.PI * 0.5;
-                            double ax0 = ix + Math.Sin(a0) * rIn, az0 = iz + Math.Cos(a0) * rIn;
-                            double bx0 = ix + Math.Sin(a0) * rOut, bz0 = iz + Math.Cos(a0) * rOut;
-                            double bx1 = ix + Math.Sin(a1) * rOut, bz1 = iz + Math.Cos(a1) * rOut;
-                            double ax1 = ix + Math.Sin(a1) * rIn, az1 = iz + Math.Cos(a1) * rIn;
-                            V(ax0, StreetY(ax0, az0) + 0.025f, az0, white);
-                            V(bx0, StreetY(bx0, bz0) + 0.025f, bz0, white);
-                            V(bx1, StreetY(bx1, bz1) + 0.025f, bz1, white);
-                            V(ax1, StreetY(ax1, az1) + 0.025f, az1, white);
-                        }
-
-                        double d2 = (ix - PX) * (ix - PX) + (iz - PZ) * (iz - PZ);
-                        if (d2 < 260 * 260 && Altitude < 240 && NearRoadDistance(ix, iz) >= 22.0)
-                            streetProps.Add((ix, iz, kx, kz, hasN, hasS, hasE, hasW));
+                        double dx = sp.X - PX, dz = sp.Z - PZ;
+                        if (dx * dx + dz * dz < 250.0 * 250.0)
+                            streetProps.Add(sp);
                     }
                 }
             }
         }
-        Rlgl.End();
 
-        // 3) 近くの都市交差点の信号機・カーブミラー・一時停止標識（3Dオブジェクト）
+        // 近くの都市交差点の信号機・カーブミラー・一時停止標識をすべて1つの Quads バッチで描画
         if (streetProps.Count == 0 || Altitude >= 240) return;
+        int quads = 0;
+        var stopSigns = new List<(double X, float Y, double Z, float Dist)>();
+        Rlgl.Begin(DrawMode.Quads);
         foreach (var sp in streetProps)
         {
             double d2 = (sp.X - PX) * (sp.X - PX) + (sp.Z - PZ) * (sp.Z - PZ);
             float dist = (float)Math.Sqrt(d2);
-            bool majorCross = (sp.Kx & 1) == 0 && (sp.Kz & 1) == 0;
-
-            if (majorCross)
+            if (sp.MajorCross)
             {
-                float nsCycle = (time + (((sp.Kx + sp.Kz) & 1) * 4.5f)) % 18f;
-                int nsState = nsCycle < 7.0f ? 0 : nsCycle < 8.4f ? 1 : 2;
-                int ewState = nsCycle < 9.0f ? 2 : nsCycle < 16.0f ? 0 : nsCycle < 17.4f ? 1 : 2;
+                var (nsState, ewState) = GetCityCrossSignalState(sp.Kx, sp.Kz, time);
+                string crossName = GetStreetCrossName(sp.Kx, sp.Kz);
 
                 void SignalCorner(bool active, double dx, double dz, int sigState, bool pedGrn)
                 {
                     if (!active) return;
                     double nx = -dz, nz = dx;
-                    // 左側車線（-nx側）脇の角切り歩道上にポールを立て、車道側へ腕を伸ばす
-                    double px = sp.X + dx * 4.45 - nx * 4.45;
-                    double pz = sp.Z + dz * 4.45 - nz * 4.45;
-                    DrawTrafficSignal3D(px, pz, StreetY(px, pz) + 0.11f, dx, dz, 2.3f, 1f, 5.4f, 0.78f, sigState, pedGrn, false, dist);
+                    // 日本の左側通行に合わせ、進入側(-dx,-dz方向から来る車)に対して交差点の向こう側・左奥角(-dx, -nx)に建てる
+                    double px = sp.X - dx * 4.45 - nx * 4.45;
+                    double pz = sp.Z - dz * 4.45 - nz * 4.45;
+                    DrawTrafficSignalBatched(px, pz, StreetY(px, pz) + 0.11f, dx, dz, 2.3f, 1f, 5.4f, 0.78f, sigState, pedGrn, true, dist, ref quads, crossName);
                 }
 
-                SignalCorner(sp.N, 0, 1, nsState, nsState == 0);
-                SignalCorner(sp.S, 0, -1, nsState, nsState == 0);
-                SignalCorner(sp.E, 1, 0, ewState, ewState == 0);
-                SignalCorner(sp.W, -1, 0, ewState, ewState == 0);
+                SignalCorner(sp.HasN, 0, 1, nsState, nsState == 0);
+                SignalCorner(sp.HasS, 0, -1, nsState, nsState == 0);
+                SignalCorner(sp.HasE, 1, 0, ewState, ewState == 0);
+                SignalCorner(sp.HasW, -1, 0, ewState, ewState == 0);
             }
             else if (d2 < 140 * 140 && Altitude < 140)
             {
-                // 細街路交差点：オレンジ色のカーブミラーと逆三角形「止まれ」標識
                 double mx = sp.X + 4.45, mz = sp.Z + 4.45;
                 float my = StreetY(mx, mz) + 0.11f;
-                var mPole = R(mx, my, mz);
-                Raylib.DrawCylinder(mPole, 0.06f, 0.07f, 2.8f, 6, scene.FogC(Rgb(235, 165, 35), dist));
-                var mirrorCenter = R(mx, my + 2.85f, mz);
-                Rlgl.PushMatrix();
-                Rlgl.Translatef(mirrorCenter.X, mirrorCenter.Y, mirrorCenter.Z);
-                Rlgl.Rotatef(135, 0, 1, 0);
-                Rlgl.Rotatef(90, 1, 0, 0);
-                Raylib.DrawCylinder(Vector3.Zero, 0.44f, 0.44f, 0.10f, 12, scene.FogC(Rgb(245, 115, 20), dist));
-                Raylib.DrawCylinder(new Vector3(0, 0.04f, 0), 0.34f, 0.34f, 0.06f, 12, scene.FogC(Rgb(215, 228, 238), dist));
-                Rlgl.PopMatrix();
+                PushTaperedPole(mx, my, mz, 0.06f, 0.07f, 2.8f, Rgb(235, 165, 35), dist, ref quads);
+                PushOrientedBox(mx, my, mz, -0.707, 0.707, 0, 2.85f, 0, 0.78f, 0.78f, 0.10f, Rgb(245, 115, 20), dist, ref quads);
+                PushOrientedBox(mx, my, mz, -0.707, 0.707, 0, 2.85f, 0.05f, 0.62f, 0.62f, 0.04f, Rgb(215, 228, 238), dist, ref quads);
 
                 double sx = sp.X - 4.45, sz = sp.Z - 4.45;
                 float sy = StreetY(sx, sz) + 0.11f;
-                var sPole = R(sx, sy, sz);
-                Raylib.DrawCylinder(sPole, 0.05f, 0.05f, 2.25f, 5, scene.FogC(Rgb(165, 170, 175), dist));
-                // 赤い逆三角形「止まれ」標識（白い外枠＋両面から見える赤地）
-                Rlgl.PushMatrix();
-                var signPos = R(sx, sy + 2.38f, sz);
-                Rlgl.Translatef(signPos.X, signPos.Y, signPos.Z);
-                Rlgl.Rotatef(90, 1, 0, 0);
-                Raylib.DrawCylinder(new Vector3(0, -0.02f, 0), 0.46f, 0.46f, 0.04f, 3, scene.FogC(Rgb(242, 242, 242), dist));
-                Raylib.DrawCylinder(new Vector3(0, -0.03f, 0), 0.37f, 0.37f, 0.06f, 3, scene.FogC(Rgb(215, 35, 35), dist));
-                Rlgl.PopMatrix();
+                PushTaperedPole(sx, sy, sz, 0.05f, 0.05f, 2.25f, Rgb(165, 170, 175), dist, ref quads);
+                stopSigns.Add((sx, sy + 2.38f, sz, dist));
             }
+        }
+        Rlgl.End();
+
+        if (stopSigns.Count > 0)
+        {
+            Rlgl.Begin(DrawMode.Triangles);
+            foreach (var st in stopSigns)
+            {
+                var wCol = scene.FogC(Rgb(242, 242, 242), st.Dist);
+                var rCol = scene.FogC(Rgb(215, 35, 35), st.Dist);
+                void TriPair(float s, float zOff, Color col)
+                {
+                    var pTopL = R(st.X - s, st.Y + s * 0.72f, st.Z + zOff);
+                    var pTopR = R(st.X + s, st.Y + s * 0.72f, st.Z + zOff);
+                    var pBot = R(st.X, st.Y - s * 0.96f, st.Z + zOff);
+                    Rlgl.Color4ub(col.R, col.G, col.B, 255);
+                    Rlgl.Vertex3f(pTopL.X, pTopL.Y, pTopL.Z);
+                    Rlgl.Vertex3f(pTopR.X, pTopR.Y, pTopR.Z);
+                    Rlgl.Vertex3f(pBot.X, pBot.Y, pBot.Z);
+                }
+                TriPair(0.46f, 0f, wCol);
+                TriPair(0.37f, 0.02f, rCol);
+                TriPair(0.37f, -0.02f, rCol);
+            }
+            Rlgl.End();
         }
     }
 
@@ -2738,6 +4227,7 @@ public sealed class FreeWorld
         var girder = Rgb(190, 80, 55);
         var rail = Rgb(225, 225, 220);
 
+        int quads = 0;
         Rlgl.Begin(DrawMode.Quads);
         foreach (int si in nearSegs)
         {
@@ -2814,27 +4304,39 @@ public sealed class FreeWorld
                 }
                 else if (jctIndex >= 0)
                 {
-                    // 交差点アプローチ部：他の道路と近い内側はアスファルトで繋ぎ、外側の縁だけ白線と路肩を描く
+                    // 交差点アプローチ部：他の道路と近い内側はアスファルトで繋ぎ、外側の縁だけ白線と路肩・橋桁・ガードレールを描く
                     var jct = junctions[jctIndex];
                     double distJct = Math.Sqrt((mx - jct.X) * (mx - jct.X) + (mz - jct.Z) * (mz - jct.Z));
                     if (distJct >= jct.Radius - 1.5)
                     {
+                        bool onLand = IsLand(mx, mz);
+                        float deep = s.Road.Type == RoadType.MegaBridge ? -12 : SeaY;
+                        var gCol = s.Road.Type == RoadType.Expressway ? Rgb(148, 152, 158) : girder;
                         bool leftFree = IsEdgeClearOfOtherArms(jct, si, mx - nx * 9.0, mz - nz * 9.0, 10.5);
                         bool rightFree = IsEdgeClearOfOtherArms(jct, si, mx + nx * 9.0, mz + nz * 9.0, 10.5);
                         if (leftFree)
                         {
-                            Strip(-10.2, -8.0, -0.04f, RoadY, shoulder);
+                            if (onLand) Strip(-10.2, -8.0, -0.04f, RoadY, shoulder);
+                            else { Side(-8.0, deep, RoadY, gCol); Side(-8.0, RoadY, RoadY + 1.15f, rail); }
                             Strip(-7.8, -7.55, RoadY + 0.03f, RoadY + 0.03f, white);
                         }
                         else Strip(-11.0, -7.8, RoadY, RoadY, asphalt);
 
                         if (rightFree)
                         {
-                            Strip(8.0, 10.2, RoadY, -0.04f, shoulder);
+                            if (onLand) Strip(8.0, 10.2, RoadY, -0.04f, shoulder);
+                            else { Side(8.0, deep, RoadY, gCol); Side(8.0, RoadY, RoadY + 1.15f, rail); }
                             Strip(7.55, 7.8, RoadY + 0.03f, RoadY + 0.03f, white);
                         }
                         else Strip(7.8, 11.0, RoadY, RoadY, asphalt);
                     }
+                }
+                quads += 10;
+                if (quads >= 900)
+                {
+                    Rlgl.End();
+                    Rlgl.Begin(DrawMode.Quads);
+                    quads = 0;
                 }
             }
 
@@ -2936,6 +4438,13 @@ public sealed class FreeWorld
                 V(cv.X + s0 * 0.55, RoadY + 0.042f, cv.Z + c0 * 0.55, median);
                 V(cv.X + s1 * 0.55, RoadY + 0.042f, cv.Z + c1 * 0.55, median);
                 V(cv.X, RoadY + 0.042f, cv.Z, median);
+                quads += 6;
+                if (quads >= 900)
+                {
+                    Rlgl.End();
+                    Rlgl.Begin(DrawMode.Quads);
+                    quads = 0;
+                }
             }
         }
         Rlgl.End();
@@ -2983,7 +4492,6 @@ public sealed class FreeWorld
 
                     // 3スパン（270m）ごとに吊り橋・斜張橋の主塔を建てる（海上橋のみ）
                     if (k % 3 == 0 && s.Road.Type != RoadType.Expressway)
-                    if (k % 3 == 0)
                     {
                         var towerCol = scene.FogC(s.Road.Type == RoadType.MegaBridge ? Rgb(230, 85, 55) : Rgb(232, 235, 240), d);
                         var leftT = R(mx - nx * 8.6, RoadY, mz - nz * 8.6);
@@ -3080,6 +4588,7 @@ public sealed class FreeWorld
             QuadBar(px3, pz3, px0, pz0, barW, y, white);
         }
 
+        int quads = 0;
         Rlgl.Begin(DrawMode.Quads);
         foreach (var j in junctions)
         {
@@ -3087,7 +4596,7 @@ public sealed class FreeWorld
             double maxR = ViewRadius + j.Radius + 80;
             if (dist2 > maxR * maxR) continue;
 
-            const int slices = 32;
+            const int slices = 64;
             float r = j.Radius;
             float rWalk = r + 2.8f;
             float rOut = r + 4.4f;
@@ -3108,8 +4617,12 @@ public sealed class FreeWorld
                 V(j.X, RoadY + 0.005f, j.Z, asphalt);
 
                 // 道路が接続していない外周部分には白線・立ち上げ縁石・歩道・法面を描く
+                double x0e = j.X + s0 * r, z0e = j.Z + c0 * r;
+                double x1e = j.X + s1 * r, z1e = j.Z + c1 * r;
                 double mx = j.X + Math.Sin(amid) * r, mz = j.Z + Math.Cos(amid) * r;
-                if (IsEdgeClearOfOtherArms(j, -1, mx, mz, 9.5))
+                if (IsEdgeClearOfOtherArms(j, -1, mx, mz, 8.6)
+                    && IsEdgeClearOfOtherArms(j, -1, x0e, z0e, 7.9)
+                    && IsEdgeClearOfOtherArms(j, -1, x1e, z1e, 7.9))
                 {
                     V(j.X + s0 * (r - 0.55), RoadY + 0.032f, j.Z + c0 * (r - 0.55), white);
                     V(j.X + s0 * (r - 0.25), RoadY + 0.032f, j.Z + c0 * (r - 0.25), white);
@@ -3117,16 +4630,16 @@ public sealed class FreeWorld
                     V(j.X + s1 * (r - 0.55), RoadY + 0.032f, j.Z + c1 * (r - 0.55), white);
 
                     // 縁石の立面（道路面→歩道高さ）
-                    V(j.X + s0 * r, RoadY, j.Z + c0 * r, curb);
-                    V(j.X + s0 * r, RoadY + 0.14f, j.Z + c0 * r, curb);
-                    V(j.X + s1 * r, RoadY + 0.14f, j.Z + c1 * r, curb);
-                    V(j.X + s1 * r, RoadY, j.Z + c1 * r, curb);
+                    V(x0e, RoadY, z0e, curb);
+                    V(x0e, RoadY + 0.14f, z0e, curb);
+                    V(x1e, RoadY + 0.14f, z1e, curb);
+                    V(x1e, RoadY, z1e, curb);
 
                     // 歩道エプロン上面
-                    V(j.X + s0 * r, RoadY + 0.14f, j.Z + c0 * r, walkCol);
+                    V(x0e, RoadY + 0.14f, z0e, walkCol);
                     V(j.X + s0 * rWalk, RoadY + 0.14f, j.Z + c0 * rWalk, walkCol);
                     V(j.X + s1 * rWalk, RoadY + 0.14f, j.Z + c1 * rWalk, walkCol);
-                    V(j.X + s1 * r, RoadY + 0.14f, j.Z + c1 * r, walkCol);
+                    V(x1e, RoadY + 0.14f, z1e, walkCol);
 
                     // 外側法面
                     float outerY = IsLand(mx, mz) ? -0.04f : SeaY;
@@ -3134,6 +4647,17 @@ public sealed class FreeWorld
                     V(j.X + s0 * rOut, outerY, j.Z + c0 * rOut, shoulder);
                     V(j.X + s1 * rOut, outerY, j.Z + c1 * rOut, shoulder);
                     V(j.X + s1 * rWalk, RoadY + 0.14f, j.Z + c1 * rWalk, shoulder);
+                    quads += 5;
+                }
+                else
+                {
+                    quads += 1;
+                }
+                if (quads >= 900)
+                {
+                    Rlgl.End();
+                    Rlgl.Begin(DrawMode.Quads);
+                    quads = 0;
                 }
             }
 
@@ -3147,7 +4671,8 @@ public sealed class FreeWorld
                     double diff = AngleDiff(a1.Angle, a0.Angle);
                     if (diff > 0.05 && diff < 1.35)
                     {
-                        double goreDist = Math.Min(52.0, Math.Max(a0.Trim, a1.Trim));
+                        double goreDist = Math.Min(80.0, Math.Min(Math.Max(a0.Trim, a1.Trim),
+                            Math.Min(segs[a0.SegIndex].Len * 0.42, segs[a1.SegIndex].Len * 0.42)));
                         if (goreDist > r - 1.0)
                         {
                             double p0x = j.X + a0.OutDx * goreDist, p0z = j.Z + a0.OutDz * goreDist;
@@ -3156,6 +4681,7 @@ public sealed class FreeWorld
                             V(p0x, RoadY + 0.002f, p0z, asphalt);
                             V(p1x, RoadY + 0.002f, p1z, asphalt);
                             V(j.X, RoadY + 0.002f, j.Z, asphalt);
+                            quads += 1;
                         }
                     }
                 }
@@ -3291,11 +4817,20 @@ public sealed class FreeWorld
                     }
                 }
             }
+            quads += 180;
+            if (quads >= 900)
+            {
+                Rlgl.End();
+                Rlgl.Begin(DrawMode.Quads);
+                quads = 0;
+            }
         }
         Rlgl.End();
 
-        // 交差点の3Dオブジェクト（信号機・交差点名板・歩行者信号・青看・ガードパイプ）
+        // 交差点の3Dオブジェクト（信号機・交差点名板・歩行者信号・青看・ガードパイプ）を Quads バッチで描画
         if (Altitude > 300) return;
+        quads = 0;
+        Rlgl.Begin(DrawMode.Quads);
         foreach (var j in junctions)
         {
             double dist2 = (j.X - PX) * (j.X - PX) + (j.Z - PZ) * (j.Z - PZ);
@@ -3304,33 +4839,32 @@ public sealed class FreeWorld
             // 外周歩道上の白い歩行者用ガードパイプ
             if (dist2 < 240 * 240 && Altitude < 200)
             {
-                const int gSlices = 32;
+                const int gSlices = 48;
                 double rGuard = j.Radius + 0.6;
+                var railCol = Rgb(235, 238, 240);
                 for (int i = 0; i < gSlices; i++)
                 {
                     double a0 = i * Math.PI * 2 / gSlices, a1 = (i + 1) * Math.PI * 2 / gSlices;
                     double amid = (a0 + a1) * 0.5;
                     double mx = j.X + Math.Sin(amid) * rGuard, mz = j.Z + Math.Cos(amid) * rGuard;
-                    if (!IsEdgeClearOfOtherArms(j, -1, mx, mz, 10.8)) continue;
                     double x0 = j.X + Math.Sin(a0) * rGuard, z0 = j.Z + Math.Cos(a0) * rGuard;
                     double x1 = j.X + Math.Sin(a1) * rGuard, z1 = j.Z + Math.Cos(a1) * rGuard;
+                    if (!IsEdgeClearOfOtherArms(j, -1, mx, mz, 9.6)
+                        || !IsEdgeClearOfOtherArms(j, -1, x0, z0, 9.2)
+                        || !IsEdgeClearOfOtherArms(j, -1, x1, z1, 9.2)) continue;
                     float gd = Vector3.Distance(R(mx, RoadY, mz), cam);
-                    var railCol = scene.FogC(Rgb(235, 238, 240), gd);
-
-                    Raylib.DrawCylinder(R(x0, RoadY + 0.14f, z0), 0.05f, 0.05f, 0.85f, 5, railCol);
+                    PushTaperedPole(x0, RoadY + 0.14f, z0, 0.05f, 0.05f, 0.85f, railCol, gd, ref quads);
                     double segLen = Math.Sqrt((x1 - x0) * (x1 - x0) + (z1 - z0) * (z1 - z0));
-                    float segYaw = -(float)(Math.Atan2(x1 - x0, z1 - z0) * 180.0 / Math.PI);
-                    var barMid = R((x0 + x1) * 0.5, RoadY + 0.90f, (z0 + z1) * 0.5);
-                    Rlgl.PushMatrix();
-                    Rlgl.Translatef(barMid.X, barMid.Y, barMid.Z);
-                    Rlgl.Rotatef(segYaw, 0, 1, 0);
-                    Raylib.DrawCube(Vector3.Zero, 0.07f, 0.08f, (float)segLen + 0.05f, railCol);
-                    Raylib.DrawCube(new Vector3(0, -0.35f, 0), 0.06f, 0.06f, (float)segLen + 0.05f, railCol);
-                    Rlgl.PopMatrix();
+                    if (segLen > 1e-4)
+                    {
+                        double fdx = (x1 - x0) / segLen, fdz = (z1 - z0) / segLen;
+                        double bmx = (x0 + x1) * 0.5, bmz = (z0 + z1) * 0.5;
+                        PushOrientedBox(bmx, RoadY + 0.14f, bmz, fdx, fdz, 0, 0.76f, 0, 0.07f, 0.08f, (float)segLen + 0.05f, railCol, gd, ref quads);
+                        PushOrientedBox(bmx, RoadY + 0.14f, bmz, fdx, fdz, 0, 0.41f, 0, 0.06f, 0.06f, (float)segLen + 0.05f, railCol, gd, ref quads);
+                    }
                 }
             }
 
-            double axis0 = j.Arms[0].Angle;
             for (int ai = 0; ai < j.Arms.Count; ai++)
             {
                 var arm = j.Arms[ai];
@@ -3339,28 +4873,40 @@ public sealed class FreeWorld
                 double dx = arm.OutDx, dz = arm.OutDz;
                 double nx = -dz, nz = dx;
 
-                // 左側進入車線（-nx側）の歩道上に信号機を立てる（干渉時は右側へ退避）
+                // 左側通行に合わせ、交差点の向こう側・左奥角（far-left）を最優先で信号機を立てる
                 double side = -1;
-                double px = j.X + dx * (arm.Trim + 0.9) - nx * 8.8;
-                double pz = j.Z + dz * (arm.Trim + 0.9) - nz * 8.8;
-                if (!IsEdgeClearOfOtherArms(j, arm.SegIndex, px, pz, 9.5))
+                double px = 0, pz = 0;
+                bool placed = false;
+                double farR = j.Radius + 1.1;
+                (double candX, double candZ, double candSide, double clearance)[] sigCandidates =
                 {
-                    side = 1;
-                    px = j.X + dx * (arm.Trim + 0.9) + nx * 8.8;
-                    pz = j.Z + dz * (arm.Trim + 0.9) + nz * 8.8;
-                    if (!IsEdgeClearOfOtherArms(j, arm.SegIndex, px, pz, 9.5)) continue;
+                    NormalizeFar(j.X, j.Z, -dx * (j.Radius * 0.85) - nx * 8.8, -dz * (j.Radius * 0.85) - nz * 8.8, farR, -1, 9.0),
+                    NormalizeFar(j.X, j.Z, -dx * (j.Radius * 0.85) + nx * 8.8, -dz * (j.Radius * 0.85) + nz * 8.8, farR,  1, 9.0),
+                    (j.X + dx * (arm.Trim + 0.9) - nx * 8.8, j.Z + dz * (arm.Trim + 0.9) - nz * 8.8, -1, 9.5),
+                    (j.X + dx * (arm.Trim + 0.9) + nx * 8.8, j.Z + dz * (arm.Trim + 0.9) + nz * 8.8,  1, 9.5),
+                };
+                static (double, double, double, double) NormalizeFar(double jx, double jz, double vx, double vz, double r, double s, double cl)
+                {
+                    double len = Math.Sqrt(vx * vx + vz * vz);
+                    return len > 1e-4 ? (jx + vx / len * r, jz + vz / len * r, s, cl) : (jx, jz, s, cl);
                 }
+                foreach (var (cx, cz, cSide, clearance) in sigCandidates)
+                {
+                    if (IsEdgeClearOfOtherArms(j, arm.SegIndex, cx, cz, clearance))
+                    {
+                        px = cx; pz = cz; side = cSide; placed = true;
+                        break;
+                    }
+                }
+                if (!placed) continue;
+
                 var polePos = R(px, RoadY, pz);
                 float d = Vector3.Distance(polePos, cam);
                 if (d > 400) continue;
 
-                // 向き別フェーズ（全赤 0.5s を含む 18s サイクル）
-                int phase = Math.Abs(Math.Cos(arm.Angle - axis0)) >= 0.58 ? 0 : 1;
-                float cycle = (time + phase * 9f) % 18f;
-                int sigIdx = cycle < 7.0f ? 0 : cycle < 8.5f ? 1 : 2; // 0:青 1:黄 2:赤
-                bool pedGreen = phase == 0 ? cycle < 6.0f : cycle >= 9.0f && cycle < 15.0f;
+                var (sigIdx, pedGreen) = GetJunctionSignalState(j, ai, time);
 
-                DrawTrafficSignal3D(px, pz, RoadY, dx, dz, 4.6f, side < 0 ? 1f : -1f, 6.2f, 1.0f, sigIdx, pedGreen, true, d);
+                DrawTrafficSignalBatched(px, pz, RoadY, dx, dz, 4.6f, side < 0 ? 1f : -1f, 6.2f, 1.0f, sigIdx, pedGreen, true, d, ref quads, GetJunctionName(j));
 
                 // 手前アプローチの青い方面案内標識（青看）
                 if (j.Arms.Count >= 3 && d < 320 && arm.Trim + 20.5 < seg.Len * 0.44)
@@ -3369,31 +4915,59 @@ public sealed class FreeWorld
                     double bz = j.Z + dz * (arm.Trim + 17.5) - nz * 8.9;
                     if (IsEdgeClearOfOtherArms(j, arm.SegIndex, bx, bz, 10.5))
                     {
-                        var signBase = R(bx, RoadY, bz);
-                        float bd = Vector3.Distance(signBase, cam);
-                        float yaw = -(float)(Math.Atan2(dx, dz) * 180.0 / Math.PI);
-                        var gPoleCol = scene.FogC(Rgb(165, 170, 176), bd);
-                        var blueCol = scene.FogC(Rgb(12, 85, 175), bd);
-                        var wCol = scene.FogC(Rgb(242, 244, 248), bd);
-
-                        Rlgl.PushMatrix();
-                        Rlgl.Translatef(signBase.X, signBase.Y, signBase.Z);
-                        Rlgl.Rotatef(yaw, 0, 1, 0);
-                        Raylib.DrawCylinder(Vector3.Zero, 0.13f, 0.16f, 6.2f, 6, gPoleCol);
-                        Raylib.DrawCube(new Vector3(2.2f, 5.45f, 0), 4.5f, 0.16f, 0.16f, gPoleCol);
+                        float bd = Vector3.Distance(R(bx, RoadY, bz), cam);
+                        var gPoleCol = Rgb(165, 170, 176);
+                        var blueCol = Rgb(12, 85, 175);
+                        var wCol = Rgb(242, 244, 248);
+                        var backCol = Rgb(132, 138, 146);
+                        PushTaperedPole(bx, RoadY, bz, 0.13f, 0.16f, 6.2f, gPoleCol, bd, ref quads);
+                        PushOrientedBox(bx, RoadY, bz, dx, dz, 2.2f, 5.45f, 0, 4.5f, 0.16f, 0.16f, gPoleCol, bd, ref quads);
                         // 看板本体（背面はアルミグレー、前面は白い縁取り＋青い板面＋白い十字/直進矢印意匠）
-                        Raylib.DrawCube(new Vector3(3.45f, 5.20f, -0.02f), 3.08f, 1.95f, 0.06f, scene.FogC(Rgb(132, 138, 146), bd));
-                        Raylib.DrawCube(new Vector3(3.45f, 5.20f, 0.03f), 3.02f, 1.88f, 0.04f, wCol);
-                        Raylib.DrawCube(new Vector3(3.45f, 5.20f, 0.06f), 2.84f, 1.72f, 0.04f, blueCol);
-                        Raylib.DrawCube(new Vector3(3.45f, 5.20f, 0.09f), 0.22f, 1.15f, 0.03f, wCol);
-                        Raylib.DrawCube(new Vector3(3.45f, 5.10f, 0.09f), 1.65f, 0.20f, 0.03f, wCol);
-                        Raylib.DrawCube(new Vector3(3.45f, 5.66f, 0.09f), 0.72f, 0.16f, 0.03f, wCol);
-                        Raylib.DrawCube(new Vector3(3.45f, 5.81f, 0.09f), 0.36f, 0.16f, 0.03f, wCol);
-                        Rlgl.PopMatrix();
+                        PushOrientedBox(bx, RoadY, bz, dx, dz, 3.45f, 5.20f, -0.02f, 3.08f, 1.95f, 0.06f, backCol, bd, ref quads);
+                        PushOrientedBox(bx, RoadY, bz, dx, dz, 3.45f, 5.20f, 0.03f, 3.02f, 1.88f, 0.04f, wCol, bd, ref quads);
+                        PushOrientedBox(bx, RoadY, bz, dx, dz, 3.45f, 5.20f, 0.06f, 2.84f, 1.72f, 0.04f, blueCol, bd, ref quads);
+                        PushOrientedBox(bx, RoadY, bz, dx, dz, 3.45f, 5.20f, 0.09f, 0.22f, 1.15f, 0.03f, wCol, bd, ref quads);
+                        PushOrientedBox(bx, RoadY, bz, dx, dz, 3.45f, 5.10f, 0.09f, 1.65f, 0.20f, 0.03f, wCol, bd, ref quads);
+                        PushOrientedBox(bx, RoadY, bz, dx, dz, 3.45f, 5.66f, 0.09f, 0.72f, 0.16f, 0.03f, wCol, bd, ref quads);
+                        PushOrientedBox(bx, RoadY, bz, dx, dz, 3.45f, 5.81f, 0.09f, 0.36f, 0.16f, 0.03f, wCol, bd, ref quads);
+
+                        if (bd < 170f)
+                        {
+                            string? straightDest = null, leftDest = null, rightDest = null;
+                            double bestStraight = 0.45, bestLeft = 0.35, bestRight = 0.35;
+                            foreach (var oa in j.Arms)
+                            {
+                                if (oa.SegIndex == arm.SegIndex) continue;
+                                var oSeg = segs[oa.SegIndex];
+                                string dest = oa.IsA ? oSeg.Road.B.Name : oSeg.Road.A.Name;
+                                double dotFwd = oa.OutDx * (-dx) + oa.OutDz * (-dz);
+                                double dotRight = oa.OutDx * nx + oa.OutDz * nz;
+                                if (dotFwd > bestStraight) { bestStraight = dotFwd; straightDest = dest; }
+                                else if (-dotRight > bestLeft) { bestLeft = -dotRight; leftDest = dest; }
+                                else if (dotRight > bestRight) { bestRight = dotRight; rightDest = dest; }
+                            }
+                            string topText = straightDest != null ? $"↑ {straightDest}" : $"↑ {GetJunctionName(j)}";
+                            string bottomText = (leftDest, rightDest) switch
+                            {
+                                (not null, not null) => $"← {leftDest}  {rightDest} →",
+                                (not null, null) => $"← {leftDest}",
+                                (null, not null) => $"{rightDest} →",
+                                _ => j.City.Name,
+                            };
+                            double bwx = bx + nx * 3.45 + dx * 0.12;
+                            double bwz = bz + nz * 3.45 + dz * 0.12;
+                            BlueSignLabels.Add(new BlueSignLabel(
+                                R(bwx, RoadY + 5.20f, bwz),
+                                topText,
+                                bottomText,
+                                new Vector3(-(float)dx, 0f, (float)dz),
+                                bd));
+                        }
                     }
                 }
             }
         }
+        Rlgl.End();
     }
 
     private void DrawTrees()
@@ -3425,7 +4999,7 @@ public sealed class FreeWorld
                 var leaf = scene.FogC(pine ? Rgb(40, 95, 50) : Rgb(70, 130, 55), d);
                 var top = p + new Vector3(0, h * 0.25f, 0);
                 if (pine) Raylib.DrawCylinder(top, 0, h * 0.28f, h * 0.8f, 7, leaf);
-                else Raylib.DrawSphere(top + new Vector3(0, h * 0.35f, 0), h * 0.3f, leaf);
+                else Raylib.DrawSphereEx(top + new Vector3(0, h * 0.35f, 0), h * 0.3f, 6, 6, leaf);
             }
         }
     }
@@ -3492,6 +5066,21 @@ public sealed class FreeWorld
 
     private void VQ(double x, float y, double z, Color c, bool lit = false)
     {
+        if (bakingBlock)
+        {
+            qvBuf[qvCount++] = (x, y, z, c, lit);
+            if (qvCount == 4)
+            {
+                bakeQuads.Add(new BakedQuad(
+                    qvBuf[0].X, qvBuf[0].Y, qvBuf[0].Z,
+                    qvBuf[1].X, qvBuf[1].Y, qvBuf[1].Z,
+                    qvBuf[2].X, qvBuf[2].Y, qvBuf[2].Z,
+                    qvBuf[3].X, qvBuf[3].Y, qvBuf[3].Z,
+                    c, lit));
+                qvCount = 0;
+            }
+            return;
+        }
         var p = R(x, y, z);
         var col = scene.FogC(c, Vector3.Distance(p, cam), lit: lit);
         Rlgl.Color4ub(col.R, col.G, col.B, col.A);
@@ -3504,11 +5093,20 @@ public sealed class FreeWorld
         var p0 = R(x0, y0, z0);
         var p1 = R(x1, y1, z1);
         var p2 = R(x2, y2, z2);
-        var col = scene.FogC(c, Vector3.Distance((p0 + p1 + p2) / 3f, cam), lit: lit);
         // 描画空間（-X反転）で外向き法線に対して必ず反時計回りになるよう補正
         var nDraw = Vector3.Cross(p1 - p0, p2 - p0);
         var outDraw = new Vector3(-outX, outY, outZ);
-        if (Vector3.Dot(nDraw, outDraw) < 0) (p1, p2) = (p2, p1);
+        bool flip = Vector3.Dot(nDraw, outDraw) < 0;
+        if (bakingBlock)
+        {
+            if (flip)
+                bakeTris.Add(new BakedTri(x0, y0, z0, x2, y2, z2, x1, y1, z1, c, lit));
+            else
+                bakeTris.Add(new BakedTri(x0, y0, z0, x1, y1, z1, x2, y2, z2, c, lit));
+            return;
+        }
+        if (flip) (p1, p2) = (p2, p1);
+        var col = scene.FogC(c, Vector3.Distance((p0 + p1 + p2) / 3f, cam), lit: lit);
         roofTris.Add(new RoofTri(p0, p1, p2, col, col, col));
     }
 
@@ -3575,59 +5173,124 @@ public sealed class FreeWorld
 
     private void DrawCities(float time)
     {
-        roofTris.Clear();
         roofBeacons.Clear();
         roofSpires.Clear();
 
         bool night = scene.Night;
-        int quads = 0;
+        double maxRange = Math.Max(900, ViewRadius * 0.85);
+        double placeIndexRange = Math.Max(1800, ViewRadius) + 400;
 
-        Rlgl.Begin(DrawMode.Quads);
         foreach (var place in Places)
         {
-            double range = Math.Max(1800, ViewRadius) + place.Radius;
-            if ((place.X - PX) * (place.X - PX) + (place.Z - PZ) * (place.Z - PZ) > range * range) continue;
+            if (indexedCityPlaces.Contains(place)) continue;
+            double pr = placeIndexRange + place.Radius;
+            if ((place.X - PX) * (place.X - PX) + (place.Z - PZ) * (place.Z - PZ) > pr * pr) continue;
+            indexedCityPlaces.Add(place);
             foreach (var b in Blocks(place))
             {
-                var p = R(b.X, b.Destroyed ? b.BaseY + 1f : b.BaseY + b.H * 0.5f, b.Z);
-                float d = Vector3.Distance(p, cam);
-                if (d > Math.Max(900, ViewRadius * 0.85) || (d > 2500 && b.H < 30)) continue;
-
-                if (b.Destroyed)
-                    DrawRubble(b, d, ref quads);
-                else
-                    DrawBuilding(b, d, night, ref quads);
-
-                if (quads >= 950)
+                long bx = FloorDiv((long)Math.Floor(b.X / ChunkWorldSize), 1);
+                long bz = FloorDiv((long)Math.Floor(b.Z / ChunkWorldSize), 1);
+                var cKey = (bx, bz);
+                if (!cityChunks.TryGetValue(cKey, out var cc))
                 {
-                    Rlgl.End();
-                    Rlgl.Begin(DrawMode.Quads);
-                    quads = 0;
+                    cc = new CityChunk
+                    {
+                        OriginX = (bx + 0.5) * ChunkWorldSize,
+                        OriginZ = (bz + 0.5) * ChunkWorldSize,
+                    };
+                    cityChunks[cKey] = cc;
                 }
+                cc.Blocks.Add(b);
             }
         }
-        Rlgl.End();
 
-        // 切妻・寄棟屋根の三角形バッチ
-        if (roofTris.Count > 0)
+        long cx0 = FloorDiv((long)Math.Floor((PX - maxRange) / ChunkWorldSize), 1);
+        long cx1 = FloorDiv((long)Math.Floor((PX + maxRange) / ChunkWorldSize), 1);
+        long cz0 = FloorDiv((long)Math.Floor((PZ - maxRange) / ChunkWorldSize), 1);
+        long cz1 = FloorDiv((long)Math.Floor((PZ + maxRange) / ChunkWorldSize), 1);
+
+        BeginChunkShaderPass();
+        for (long cx = cx0; cx <= cx1; cx++)
         {
-            Rlgl.Begin(DrawMode.Triangles);
-            for (int i = 0; i < roofTris.Count; i++)
+            double minX = cx * ChunkWorldSize, maxX = minX + ChunkWorldSize;
+            double clX = Math.Clamp(PX, minX, maxX) - PX;
+            for (long cz = cz0; cz <= cz1; cz++)
             {
-                var t = roofTris[i];
-                Rlgl.Color4ub(t.C0.R, t.C0.G, t.C0.B, t.C0.A);
-                Rlgl.Vertex3f(t.P0.X, t.P0.Y, t.P0.Z);
-                Rlgl.Color4ub(t.C1.R, t.C1.G, t.C1.B, t.C1.A);
-                Rlgl.Vertex3f(t.P1.X, t.P1.Y, t.P1.Z);
-                Rlgl.Color4ub(t.C2.R, t.C2.G, t.C2.B, t.C2.A);
-                Rlgl.Vertex3f(t.P2.X, t.P2.Y, t.P2.Z);
-                if ((i & 511) == 511)
+                double minZ = cz * ChunkWorldSize, maxZ = minZ + ChunkWorldSize;
+                double clZ = Math.Clamp(PZ, minZ, maxZ) - PZ;
+                double clD2 = clX * clX + clZ * clZ;
+                if (clD2 > maxRange * maxRange) continue;
+                if (!cityChunks.TryGetValue((cx, cz), out var cc) || cc.Blocks.Count == 0) continue;
+
+                float clDist = (float)Math.Sqrt(clD2);
+                int lod = clDist < 170f ? 0 : clDist < 480f ? 1 : clDist < 2450f ? 2 : 3;
+
+                int destroyedCount = 0;
+                foreach (var b in cc.Blocks)
+                    if (b.Destroyed) destroyedCount++;
+
+                if (cc.BuiltNight != night || cc.BuiltDestroyedCount != destroyedCount)
                 {
-                    Rlgl.End();
-                    Rlgl.Begin(DrawMode.Triangles);
+                    for (int li = 0; li < 4; li++)
+                    {
+                        var oldMeshes = cc.LodMeshes[li];
+                        if (oldMeshes != null)
+                            foreach (var m in oldMeshes)
+                                Raylib.UnloadMesh(m);
+                        cc.LodMeshes[li] = null;
+                        cc.LodBeacons[li] = null;
+                        cc.LodSpires[li] = null;
+                    }
+                    cc.BuiltNight = night;
+                    cc.BuiltDestroyedCount = destroyedCount;
+                }
+
+                if (cc.LodMeshes[lod] == null)
+                {
+                    bakeQuads.Clear();
+                    bakeTris.Clear();
+                    bakeBeacons.Clear();
+                    bakeSpires.Clear();
+                    qvCount = 0;
+                    bakingBlock = true;
+                    float bakeDist = lod switch { 0 => 95f, 1 => 225f, 2 => 480f, _ => 700f };
+                    int dummy = 0;
+                    foreach (var b in cc.Blocks)
+                    {
+                        if (lod == 3 && b.H < 30f && !b.Destroyed) continue;
+                        if (b.Destroyed)
+                            DrawRubble(b, bakeDist, ref dummy);
+                        else
+                            DrawBuilding(b, bakeDist, night, ref dummy);
+                    }
+                    bakingBlock = false;
+                    cc.LodMeshes[lod] = BuildChunkMeshes(cc.OriginX, cc.OriginZ, bakeQuads, bakeTris);
+                    cc.LodBeacons[lod] = bakeBeacons.ToArray();
+                    cc.LodSpires[lod] = bakeSpires.ToArray();
+                }
+
+                DrawChunkMeshes(cc.OriginX, cc.OriginZ, cc.LodMeshes[lod]!);
+
+                if (clDist < 1200f)
+                {
+                    float approxD = Math.Max(40f, clDist + (float)ChunkWorldSize * 0.5f);
+                    var beacons = cc.LodBeacons[lod]!;
+                    for (int i = 0; i < beacons.Length; i++)
+                    {
+                        var bc = beacons[i];
+                        roofBeacons.Add(new RoofBeacon(bc.X, bc.Y, bc.Z, approxD, bc.Phase));
+                    }
+                    if (clDist < 600f)
+                    {
+                        var spires = cc.LodSpires[lod]!;
+                        for (int i = 0; i < spires.Length; i++)
+                        {
+                            var sp = spires[i];
+                            roofSpires.Add(new RoofSpire(sp.X, sp.Y0, sp.Y1, sp.Z, approxD));
+                        }
+                    }
                 }
             }
-            Rlgl.End();
         }
 
         // 高層ビル屋上の避雷針アンテナ・点滅航空障害灯
@@ -3636,11 +5299,33 @@ public sealed class FreeWorld
             var col = scene.FogC(Rgb(198, 204, 212), sp.Dist);
             Raylib.DrawLine3D(R(sp.X, sp.Y0, sp.Z), R(sp.X, sp.Y1, sp.Z), col);
         }
-        foreach (var bc in roofBeacons)
+        if (roofBeacons.Count > 0)
         {
-            bool on = ((int)(time * 1.4f) & 1) == (bc.Phase ? 1 : 0);
-            var col = on ? scene.FogC(Rgb(255, 42, 42), bc.Dist, lit: true) : scene.FogC(Rgb(85, 28, 28), bc.Dist);
-            Raylib.DrawSphere(R(bc.X, bc.Y, bc.Z), on ? 0.42f : 0.28f, col);
+            int quads = 0;
+            Rlgl.Begin(DrawMode.Quads);
+            foreach (var bc in roofBeacons)
+            {
+                bool on = ((int)(time * 1.4f) & 1) == (bc.Phase ? 1 : 0);
+                var col = on ? scene.FogC(Rgb(255, 42, 42), bc.Dist, lit: true) : scene.FogC(Rgb(85, 28, 28), bc.Dist);
+                float r = on ? 0.42f : 0.26f;
+                var c = R(bc.X, bc.Y, bc.Z);
+                float x0 = c.X - r, x1 = c.X + r, y0 = c.Y - r, y1 = c.Y + r, z0 = c.Z - r, z1 = c.Z + r;
+                Rlgl.Color4ub(col.R, col.G, col.B, 255);
+                Rlgl.Vertex3f(x1, y1, z0); Rlgl.Vertex3f(x0, y1, z0); Rlgl.Vertex3f(x0, y1, z1); Rlgl.Vertex3f(x1, y1, z1);
+                Rlgl.Vertex3f(x0, y0, z0); Rlgl.Vertex3f(x1, y0, z0); Rlgl.Vertex3f(x1, y0, z1); Rlgl.Vertex3f(x0, y0, z1);
+                Rlgl.Vertex3f(x0, y0, z1); Rlgl.Vertex3f(x1, y0, z1); Rlgl.Vertex3f(x1, y1, z1); Rlgl.Vertex3f(x0, y1, z1);
+                Rlgl.Vertex3f(x1, y0, z0); Rlgl.Vertex3f(x0, y0, z0); Rlgl.Vertex3f(x0, y1, z0); Rlgl.Vertex3f(x1, y1, z0);
+                Rlgl.Vertex3f(x1, y0, z1); Rlgl.Vertex3f(x1, y0, z0); Rlgl.Vertex3f(x1, y1, z0); Rlgl.Vertex3f(x1, y1, z1);
+                Rlgl.Vertex3f(x0, y0, z0); Rlgl.Vertex3f(x0, y0, z1); Rlgl.Vertex3f(x0, y1, z1); Rlgl.Vertex3f(x0, y1, z0);
+                quads += 6;
+                if (quads >= 900)
+                {
+                    Rlgl.End();
+                    Rlgl.Begin(DrawMode.Quads);
+                    quads = 0;
+                }
+            }
+            Rlgl.End();
         }
     }
 
@@ -4094,14 +5779,29 @@ public sealed class FreeWorld
         if (d < 1200)
         {
             bool phase = (b.Seed & 1) == 0;
-            roofBeacons.Add(new RoofBeacon(b.X - topHx + 0.5, b.TopY + 1.4f, b.Z - topHz + 0.5, d, phase));
-            roofBeacons.Add(new RoofBeacon(b.X + topHx - 0.5, b.TopY + 1.4f, b.Z + topHz - 0.5, d, phase));
-            if (d < 600 && (b.Style % 2 == 0 || b.H > 100f))
+            if (bakingBlock)
             {
-                double antX = b.X + topHx * 0.58, antZ = b.Z + topHz * 0.58;
-                float antH = 8f + b.H * 0.08f;
-                roofSpires.Add(new RoofSpire(antX, b.TopY, b.TopY + antH, antZ, d));
-                roofBeacons.Add(new RoofBeacon(antX, b.TopY + antH + 0.25f, antZ, d, !phase));
+                bakeBeacons.Add(new BakedBeacon(b.X - topHx + 0.5, b.TopY + 1.4f, b.Z - topHz + 0.5, phase));
+                bakeBeacons.Add(new BakedBeacon(b.X + topHx - 0.5, b.TopY + 1.4f, b.Z + topHz - 0.5, phase));
+                if (d < 600 && (b.Style % 2 == 0 || b.H > 100f))
+                {
+                    double antX = b.X + topHx * 0.58, antZ = b.Z + topHz * 0.58;
+                    float antH = 8f + b.H * 0.08f;
+                    bakeSpires.Add(new BakedSpire(antX, b.TopY, b.TopY + antH, antZ));
+                    bakeBeacons.Add(new BakedBeacon(antX, b.TopY + antH + 0.25f, antZ, !phase));
+                }
+            }
+            else
+            {
+                roofBeacons.Add(new RoofBeacon(b.X - topHx + 0.5, b.TopY + 1.4f, b.Z - topHz + 0.5, d, phase));
+                roofBeacons.Add(new RoofBeacon(b.X + topHx - 0.5, b.TopY + 1.4f, b.Z + topHz - 0.5, d, phase));
+                if (d < 600 && (b.Style % 2 == 0 || b.H > 100f))
+                {
+                    double antX = b.X + topHx * 0.58, antZ = b.Z + topHz * 0.58;
+                    float antH = 8f + b.H * 0.08f;
+                    roofSpires.Add(new RoofSpire(antX, b.TopY, b.TopY + antH, antZ, d));
+                    roofBeacons.Add(new RoofBeacon(antX, b.TopY + antH + 0.25f, antZ, d, !phase));
+                }
             }
         }
     }
