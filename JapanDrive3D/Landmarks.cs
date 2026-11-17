@@ -168,12 +168,13 @@ public static class Landmarks
 
     // ---------------- 描画 ----------------
 
-    public static void Draw(Scene sc, Spot spot, Vector3 pos, float time)
+    public static void Draw(Scene sc, Spot spot, Vector3 pos, float time, float yaw = 0)
     {
         scene = sc;
         basePos = pos;
         Rlgl.PushMatrix();
         Rlgl.Translatef(pos.X, pos.Y, pos.Z);
+        Rlgl.Rotatef(yaw * 180 / MathF.PI, 0, 1, 0);
         Model(spot, time);
         Rlgl.PopMatrix();
     }
@@ -190,6 +191,52 @@ public static class Landmarks
                 Box(2.5f, 1.7f, -4, 2.5f, 1.4f, 0.2f, window);
                 for (int x = -3; x <= 3; x += 3)
                     Box(x, 4.6f, -4, 1.8f, 1.4f, 0.2f, window);
+                return;
+            case "宗谷岬":
+                Box(0, 0.55f, 0, 12, 1.1f, 7, Stone);
+                Segment(-4, 1, 0, 9, 0, 1.15f, 2.2f, White);
+                Segment(0, 9, 4, 1, 0, 1.15f, 2.2f, White);
+                Box(0, 2, 0, 6.5f, 1.5f, 2.2f, White);
+                Ball(0, 5, 0, 1.2f, Stone);
+                return;
+            case "白米千枚田":
+                for (int i = 0; i < 8; i++)
+                {
+                    float width = 40 - i * 3;
+                    Box(i * 0.6f, (i + 1) * 0.5f, i * 4 - 12, width, i + 1, 4.2f, Rgb(126, 109, 65));
+                    Box(i * 0.6f, i + 1.1f, i * 4 - 12, width - 1, 0.2f, 3.6f, Rgb(119 + i * 3, 151 + i * 2, 64));
+                }
+                return;
+            case "天橋立":
+                Water(0, 0, 60);
+                for (int i = -6; i <= 6; i++)
+                {
+                    float x = MathF.Sin(i * 0.4f) * 6;
+                    Cyl(x, 0.2f, i * 8, 7, 9, 0.8f, 16, Rgb(215, 198, 150));
+                    Pine(x, i * 8, 6 + Math.Abs(i % 4));
+                }
+                return;
+            case "高千穂峡":
+            case "太魯閣渓谷":
+                bool marble = spot.Name == "太魯閣渓谷";
+                Water(0, 0, 38, Rgb(48, 141, 143));
+                for (int i = -5; i <= 5; i++)
+                    foreach (int side in new[] { -1, 1 })
+                    {
+                        float x = side * (15 + MathF.Sin(i * 0.7f) * 4);
+                        float h = 16 + Math.Abs(i % 4) * 3;
+                        Cyl(x, 0, i * 6, 5, 7, h, 6, marble ? Rgb(170, 176, 172) : Stone);
+                        Cyl(x, h, i * 6, 1, 5, 2, 8, Rgb(68, 111, 71));
+                    }
+                if (!marble) Box(-9, 8, 1, 1.2f, 16, 2, Rgb(199, 230, 235));
+                return;
+            case "星海広場・旅順港":
+                Cyl(0, 0, 0, 27, 27, 0.12f, 40, Stone);
+                for (int i = 0; i < 12; i++)
+                {
+                    float a = i * MathF.PI / 6;
+                    Cyl(22 * MathF.Cos(a), 0, 22 * MathF.Sin(a), 0.6f, 0.8f, 5, 10, White);
+                }
                 return;
             case "鳥取砂丘":
                 for (int i = 0; i < 5; i++)
@@ -310,6 +357,9 @@ public static class Landmarks
             float w = 27 - t * 5.2f, d = 23 - t * 4.6f;
             float y = 13 + t * 8.6f;
             Box(0, y + 3, 0, w, 6, d, wall);
+            for (int i = -1; i <= 1; i++)
+                foreach (int side in new[] { -1, 1 })
+                    Box(i * w * 0.28f, y + 3.2f, side * d * 0.5f, w * 0.12f, 2, 0.24f, RoofDark);
             if (v == 1) Box(0, y + 5.4f, 0, w + 0.1f, 1.2f, d + 0.1f, White);
             Roof(0, y + 6, 0, w + 5.5f, d + 5.5f, 3.4f, 0.55f, Rgb(70, 82, 88));
             // 千鳥破風（三角の飾り屋根）
@@ -401,9 +451,12 @@ public static class Landmarks
         Box(0, 22.3f, 0, 14, 1, 1.4f, RoofDark);
         Box(0, 1.2f, -17, 12, 1.4f, 5, Stone);
         // 山門と大提灯
-        Box(0, 5, -32, 16, 10, 7, Rgb(190, 55, 40));
+        foreach (int x in new[] { -7, -3, 3, 7 })
+            foreach (int z in new[] { -34, -30 })
+                Cyl(x, 0, z, 0.65f, 0.8f, 9, 12, Red);
+        Box(0, 9.4f, -32, 17, 1.2f, 8, Red);
         Roof(0, 10, -32, 22, 12, 5, 0.3f, RoofDark);
-        Cyl(0, 2.5f, -35.8f, 1.6f, 1.6f, 3.2f, 12, Rgb(200, 40, 35));
+        Cyl(0, 5.7f, -33, 1.6f, 1.6f, 3.2f, 12, Rgb(200, 40, 35));
         Pine(-26, -20, 11);
         Pine(26, -20, 11);
     }
@@ -502,8 +555,40 @@ public static class Landmarks
         Ball(0, 34.2f, 0, 2.3f, Rgb(50, 50, 55));
     }
 
+    internal const int RoadBridgeVariant = 100;
+
     private static void Bridge(int v)
     {
+        if (v >= RoadBridgeVariant)
+        {
+            // 路面は既存の道路を使い、路肩に欄干と主塔を置く。
+            var frame = v == RoadBridgeVariant + 1 ? Wood : v == RoadBridgeVariant ? Stone : White;
+            foreach (int side in new[] { -1, 1 })
+            {
+                float x = side * 8.8f;
+                Box(x, -1.1f, 0, 1.2f, 2.2f, 144, frame);
+                for (int z = -72; z <= 72; z += 8)
+                    Box(x, 0.7f, z, 0.45f, 1.4f, 0.45f, frame);
+                Box(x, 1.35f, 0, 0.4f, 0.32f, 144, frame);
+                foreach (int z in new[] { -36, 36 })
+                {
+                    Box(x, -4, z, 2.4f, 8, 3, Stone);
+                    if (v != RoadBridgeVariant + 2) continue;
+                    Box(x, 13, z, 1.6f, 26, 2, White);
+                    for (int k = -6; k < 6; k++)
+                    {
+                        float h0 = 5 + 20 * MathF.Pow(1 - Math.Abs(k) / 6f, 2);
+                        float h1 = 5 + 20 * MathF.Pow(1 - Math.Abs(k + 1) / 6f, 2);
+                        float startZ = z + k * 6;
+                        Box(x, h0 / 2, startZ, 0.24f, h0, 0.24f, White);
+                        if (recording == null)
+                            Raylib.DrawCylinderEx(new(x, h0, startZ), new(x, h1, startZ + 6), 0.22f, 0.22f, 6, C(White));
+                        else Box(x, (h0 + h1) / 2, startZ + 3, 0.44f, Math.Abs(h1 - h0) + 0.44f, 6, White);
+                    }
+                }
+            }
+            return;
+        }
         var river = Rgb(60, 120, 160);
         Box(0, 0.05f, 15, 360, 0.1f, 70, river);
         switch (v)

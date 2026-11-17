@@ -810,8 +810,8 @@ public sealed class FreeWorld : IDisposable
         }
         _ = LandRaster.Land(0, 0);   // 地図を先に作っておく
         BuildRoadSpatialIndex();
-        PlaceSpots();
         BuildRivers();
+        PlaceSpots();
     }
 
     private void BuildRoadSpatialIndex()
@@ -1647,6 +1647,29 @@ public sealed class FreeWorld : IDisposable
         return minMargin;
     }
 
+    private readonly Dictionary<Spot, (Spot Model, float Yaw)> roadBridges = new();
+
+    private bool PlaceRoadBridge(Spot spot, double cx, double cz)
+    {
+        double best = double.PositiveInfinity;
+        foreach (var seg in segs)
+        {
+            if (seg.Road.A != spot.City && seg.Road.B != spot.City) continue;
+            for (double along = seg.TrimA + 85; along <= seg.Len - seg.TrimB - 85; along += 80)
+            {
+                double x = seg.Ax + seg.Dx * along, z = seg.Az + seg.Dz * along;
+                double distance = Math.Sqrt((x - cx) * (x - cx) + (z - cz) * (z - cz));
+                if (distance >= best) continue;
+                double score = distance + (IsInWater(x, z) ? 0 : 6000);
+                if (score >= best) continue;
+                best = score;
+                SpotPos[spot] = (x, z);
+                roadBridges[spot] = (spot with { Variant = spot.Variant + Landmarks.RoadBridgeVariant }, (float)Math.Atan2(-seg.Dx, seg.Dz));
+            }
+        }
+        return roadBridges.ContainsKey(spot);
+    }
+
     private void PlaceSpots()
     {
         var cityRadiusByName = Places.ToDictionary(p => p.Name, p => p.Radius);
@@ -1666,6 +1689,7 @@ public sealed class FreeWorld : IDisposable
                     if (real.Smoke) SmokeSpots.Add(sp);
                     continue;
                 }
+                if (sp.Type == LandmarkType.Bridge && PlaceRoadBridge(sp, cx, cz)) continue;
                 double maxExtent = 0;
                 foreach (var (ox, oz, r) in SpotFootprints(sp))
                     maxExtent = Math.Max(maxExtent, Math.Sqrt(ox * ox + oz * oz) + r);
@@ -1722,7 +1746,14 @@ public sealed class FreeWorld : IDisposable
             float baseY = IsLand(pos.X, pos.Z) ? TerrainHeight(pos.X, pos.Z) : SeaY + 1;
             var from = new Vector3((float)(pos.X - PX), startY - baseY, (float)(PZ - pos.Z));
             var to = new Vector3((float)(pos.X - nx), endY - baseY, (float)(nz - pos.Z));
-            if (Landmarks.Hits(spot, from, to, radius)) return true;
+            if (roadBridges.TryGetValue(spot, out var bridge))
+            {
+                var inverse = Matrix4x4.CreateRotationY(-bridge.Yaw);
+                from.Y = startY - RoadY;
+                to.Y = endY - RoadY;
+                if (Landmarks.Hits(bridge.Model, Vector3.Transform(from, inverse), Vector3.Transform(to, inverse), radius)) return true;
+            }
+            else if (Landmarks.Hits(spot, from, to, radius)) return true;
         }
         return false;
     }
@@ -2250,6 +2281,11 @@ public sealed class FreeWorld : IDisposable
             if (dx * dx + dz * dz > range * range) continue;
             if (SmokeSpots.Contains(spot)) DrawSmoke(pos.X, pos.Z, time);
             if (TerrainSpots.Contains(spot)) continue;
+            if (roadBridges.TryGetValue(spot, out var bridge))
+            {
+                Landmarks.Draw(scene, bridge.Model, R(pos.X, RoadY, pos.Z), time, bridge.Yaw);
+                continue;
+            }
             Landmarks.Draw(scene, spot, R(pos.X, IsLand(pos.X, pos.Z) ? TerrainHeight(pos.X, pos.Z) : SeaY + 1, pos.Z), time);
         }
         foreach (var c in Cars)

@@ -78,7 +78,7 @@ public static class Spots
         S("浜松", "浜名湖", LandmarkType.Lake);
         S("伊勢", "伊勢神宮", LandmarkType.Torii);
         // 近畿
-        S("舞鶴", "天橋立", LandmarkType.Bridge, 1);
+        S("舞鶴", "天橋立", LandmarkType.Garden, 1);
         S("米原", "彦根城", LandmarkType.Castle);
         S("京都", "伏見稲荷大社", LandmarkType.Torii, 1);
         S("京都", "東寺 五重塔", LandmarkType.Pagoda);
@@ -121,7 +121,7 @@ public static class Spots
         S("阿蘇", "阿蘇山", LandmarkType.Volcano);
         S("熊本", "熊本城", LandmarkType.Castle, 1);
         S("長崎", "大浦天主堂", LandmarkType.ClockTower, 1);
-        S("延岡", "高千穂峡", LandmarkType.Bridge, 1);
+        S("延岡", "高千穂峡", LandmarkType.Lake, 1);
         S("宮崎", "青島神社", LandmarkType.Torii);
         S("鹿児島", "桜島", LandmarkType.Volcano);
         S("指宿", "開聞岳", LandmarkType.Mountain, 1);
@@ -162,7 +162,7 @@ public static class Spots
         S("平壌", "主体思想塔・凱旋門", LandmarkType.Tower, 2);
         // 中国大陸
         S("瀋陽", "瀋陽故宮", LandmarkType.Castle, 2);
-        S("大連", "星海広場・旅順港", LandmarkType.Bridge, 2);
+        S("大連", "星海広場・旅順港", LandmarkType.Monument, 2);
         S("北京", "紫禁城（故宮）・天壇祈年殿", LandmarkType.Castle, 2);
         S("北京", "万里の長城（八達嶺）", LandmarkType.Monument, 1);
         S("青島", "桟橋（回瀾閣）・嶗山", LandmarkType.Pagoda, 1);
@@ -174,7 +174,7 @@ public static class Spots
         S("台北", "台北101", LandmarkType.Tower, 1);
         S("台北", "九份・龍山寺", LandmarkType.Temple, 1);
         S("台中", "日月潭", LandmarkType.Lake);
-        S("花蓮", "太魯閣渓谷", LandmarkType.Bridge, 1);
+        S("花蓮", "太魯閣渓谷", LandmarkType.Lake, 1);
         S("台南", "赤崁楼・安平古堡", LandmarkType.Castle, 2);
         S("高雄", "蓮池潭 龍虎塔", LandmarkType.Pagoda, 1);
         S("台東", "三仙台 八拱橋", LandmarkType.Bridge, 1);
