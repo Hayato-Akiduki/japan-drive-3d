@@ -1710,6 +1710,23 @@ public sealed class FreeWorld : IDisposable
         }
     }
 
+    public bool HitLandmark(double nx, double nz, float startY, float endY, float radius)
+    {
+        foreach (var (spot, pos) in SpotPos)
+        {
+            // 最大の模型（富士山）の裾野まで含めて候補を絞る。
+            double reach = 500 + radius;
+            if (pos.X < Math.Min(PX, nx) - reach || pos.X > Math.Max(PX, nx) + reach ||
+                pos.Z < Math.Min(PZ, nz) - reach || pos.Z > Math.Max(PZ, nz) + reach ||
+                TerrainSpots.Contains(spot)) continue;
+            float baseY = IsLand(pos.X, pos.Z) ? TerrainHeight(pos.X, pos.Z) : SeaY + 1;
+            var from = new Vector3((float)(pos.X - PX), startY - baseY, (float)(PZ - pos.Z));
+            var to = new Vector3((float)(pos.X - nx), endY - baseY, (float)(nz - pos.Z));
+            if (Landmarks.Hits(spot, from, to, radius)) return true;
+        }
+        return false;
+    }
+
     public static float CollectRadius(LandmarkType t) => t switch
     {
         LandmarkType.Mountain or LandmarkType.Volcano => 600,

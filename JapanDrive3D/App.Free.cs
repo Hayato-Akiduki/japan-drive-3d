@@ -506,7 +506,7 @@ public sealed partial class App
         double hr = heading * Math.PI / 180;
 
         // ---- 飛行（高さは海面からの高さ） ----
-        float prevAlt = altitude, vs = 0;
+        float prevAlt = altitude, movementStartY = freeY, vs = 0;
         if (playerKind == VehicleKind.Helicopter)
         {
             vs = (climb ? 14 : descend ? -14 : 0) * (1 + Math.Max(0, altitude) / 500f);
@@ -543,16 +543,18 @@ public sealed partial class App
         bool move = true;
         crashCooldown -= dt;
         var block = f.HitBlock(nx, nz, freeY + 0.8f, PlayerHalfWidth + 0.6f);
-        if (block != null)
+        bool landmark = f.HitLandmark(nx, nz, movementStartY + 0.8f, freeY + 0.8f, PlayerHalfWidth);
+        if (landmark) freeY = movementStartY;
+        if (block != null || landmark)
         {
-            if (playerKind == VehicleKind.Tank && Math.Abs(freeKmh) > 8)
+            if (!landmark && block != null && playerKind == VehicleKind.Tank && Math.Abs(freeKmh) > 8)
             {
                 DestroyBlock(block);   // 戦車はビルを突き破る
                 freeKmh *= 0.6f;
             }
             else if (flyer && airborne && Math.Abs(freeKmh) > 60)
             {
-                AircraftCrash("ビルに激突！");
+                AircraftCrash(landmark ? "名所に激突！" : "ビルに激突！");
                 move = false;
             }
             else

@@ -50,20 +50,83 @@ public static class Landmarks
 
     private static Color C(Color c) => scene.LandmarkFog(c, basePos);
 
-    private static void Box(float x, float y, float z, float w, float h, float d, Color c) =>
-        Raylib.DrawCube(new Vector3(x, y, z), w, h, d, C(c));
+    // 描画と同じ寸法で、初回だけ部品の衝突範囲を記録する。
+    private static readonly Dictionary<Spot, List<BoundingBox>> bounds = new();
+    private static List<BoundingBox>? recording;
+    private static float localZ;
 
-    private static void Cyl(float x, float y, float z, float rTop, float rBottom, float h, int slices, Color c) =>
-        Raylib.DrawCylinder(new Vector3(x, y, z), rTop, rBottom, h, slices, C(c));
+    private static void Box(float x, float y, float z, float w, float h, float d, Color c)
+    {
+        if (recording == null)
+            Raylib.DrawCube(new Vector3(x, y, z + localZ), w, h, d, C(c));
+        else if (h > 0.15f)
+        {
+            var center = new Vector3(x, y, z + localZ);
+            var half = new Vector3(w, h, d) / 2;
+            recording.Add(new BoundingBox(center - half, center + half));
+        }
+    }
 
-    private static void Ball(float x, float y, float z, float r, Color c) =>
-        Raylib.DrawSphere(new Vector3(x, y, z), r, C(c));
+    private static void Cyl(float x, float y, float z, float rTop, float rBottom, float h, int slices, Color c)
+    {
+        if (recording == null)
+            Raylib.DrawCylinder(new Vector3(x, y, z + localZ), rTop, rBottom, h, slices, C(c));
+        else if (h > 0.15f)
+        {
+            int layers = Math.Clamp((int)Math.Abs(rTop - rBottom), 1, 16);
+            for (int i = 0; i < layers; i++)
+            {
+                float r = rBottom + (rTop - rBottom) * (rTop > rBottom ? i + 1 : i) / layers;
+                Box(x, y + (i + 0.5f) * h / layers, z, 2 * r, h / layers, 2 * r, c);
+            }
+        }
+    }
+
+    private static void Ball(float x, float y, float z, float r, Color c)
+    {
+        if (recording == null) Raylib.DrawSphere(new Vector3(x, y, z + localZ), r, C(c));
+        else Box(x, y, z, 2 * r, 2 * r, 2 * r, c);
+    }
+
+    internal static bool Hits(Spot spot, Vector3 from, Vector3 to, float radius)
+    {
+        if (!bounds.TryGetValue(spot, out var parts))
+        {
+            recording = parts = new();
+            try { Model(spot, 0); }
+            finally { recording = null; localZ = 0; }
+            bounds.Add(spot, parts);
+        }
+        var padding = new Vector3(radius, 0.7f, radius);
+        foreach (var part in parts)
+        {
+            var min = part.Min - padding;
+            var max = part.Max + padding;
+            float enter = 0, leave = 1;
+            // ワープや再開で内部にいる場合は外へ出られるようにする。
+            if (Vector3.Clamp(from, min, max) == from) continue;
+            if (Clip(from.X, to.X, min.X, max.X, ref enter, ref leave) &&
+                Clip(from.Y, to.Y, min.Y, max.Y, ref enter, ref leave) &&
+                Clip(from.Z, to.Z, min.Z, max.Z, ref enter, ref leave)) return true;
+        }
+        return false;
+    }
+
+    private static bool Clip(float start, float end, float min, float max, ref float enter, ref float leave)
+    {
+        if (start == end) return start >= min && start <= max;
+        float a = (min - start) / (end - start), b = (max - start) / (end - start);
+        enter = Math.Max(enter, Math.Min(a, b));
+        leave = Math.Min(leave, Math.Max(a, b));
+        return enter <= leave;
+    }
 
     /// <summary>四角い屋根（寄棟）や石垣：底辺 w×d、高さ h、上面は底辺の top 倍。</summary>
     private static void Roof(float x, float y, float z, float w, float d, float h, float top, Color c)
     {
+        if (recording != null) { float scale = Math.Max(1, top); Box(x, y + h / 2, z, w * scale, h, d * scale, c); return; }
         Rlgl.PushMatrix();
-        Rlgl.Translatef(x, y, z);
+        Rlgl.Translatef(x, y, z + localZ);
         Rlgl.Scalef(w / 2, 1, d / 2);
         Rlgl.Rotatef(45, 0, 1, 0);
         Raylib.DrawCylinder(Vector3.Zero, top * 1.4142f, 1.4142f, h, 4, C(c));
@@ -74,9 +137,14 @@ public static class Landmarks
     private static void Segment(float x1, float y1, float x2, float y2, float z, float thick, float depth, Color c)
     {
         float dx = x2 - x1, dy = y2 - y1;
+        if (recording != null)
+        {
+            Box((x1 + x2) / 2, (y1 + y2) / 2, z, Math.Abs(dx) + thick, Math.Abs(dy) + thick, depth, c);
+            return;
+        }
         float len = MathF.Sqrt(dx * dx + dy * dy);
         Rlgl.PushMatrix();
-        Rlgl.Translatef((x1 + x2) / 2, (y1 + y2) / 2, z);
+        Rlgl.Translatef((x1 + x2) / 2, (y1 + y2) / 2, z + localZ);
         Rlgl.Rotatef(MathF.Atan2(dy, dx) * 180 / MathF.PI, 0, 0, 1);
         Raylib.DrawCube(Vector3.Zero, len + thick * 0.5f, thick, depth, C(c));
         Rlgl.PopMatrix();
@@ -106,6 +174,37 @@ public static class Landmarks
         basePos = pos;
         Rlgl.PushMatrix();
         Rlgl.Translatef(pos.X, pos.Y, pos.Z);
+        Model(spot, time);
+        Rlgl.PopMatrix();
+    }
+
+    private static void Model(Spot spot, float time)
+    {
+        switch (spot.Name)
+        {
+            case "鳥取砂丘":
+                for (int i = 0; i < 5; i++)
+                    Roof(-28 + i * 13, 0, 8 + i % 2 * 12, 34, 22, 4 + i % 3 * 2, 0.16f, Rgb(224 + i * 3, 188 + i * 3, 130));
+                return;
+            case "幸福駅":
+                Box(0, 0.4f, 2, 26, 0.8f, 9, Stone);
+                Box(-3, 3, 3, 11, 4.4f, 6, Wood);
+                Roof(-3, 5.2f, 3, 13, 8, 3, 0.12f, RoofDark);
+                for (int i = 0; i < 3; i++) Box(-7 + i * 3, 3.2f, -0.06f, 1.8f, 1.6f, 0.2f, Rgb(104, 151, 165));
+                for (int i = -12; i <= 12; i++) Box(i, 0.12f, -5, 0.36f, 0.24f, 2.4f, Wood);
+                foreach (float z in new[] { -5.8f, -4.2f }) Box(0, 0.32f, z, 26, 0.2f, 0.16f, RoofDark);
+                return;
+            case "台北101":
+                var glass = Rgb(78, 143, 139);
+                Roof(0, 0, 0, 25, 25, 21, 0.7f, glass);
+                for (int i = 0; i < 8; i++)
+                {
+                    Roof(0, 21 + i * 11, 0, 16, 16, 10, 1.28f, glass);
+                    Box(0, 31.5f + i * 11, 0, 21, 1, 21, Rgb(52, 103, 104));
+                }
+                Cyl(0, 109, 0, 0.3f, 2.2f, 15, 8, White);
+                return;
+        }
         switch (spot.Type)
         {
             case LandmarkType.Tower: Tower(spot.Variant); break;
@@ -123,7 +222,6 @@ public static class Landmarks
             case LandmarkType.Lake: Lake(spot.Variant, time); break;
             case LandmarkType.Monument: Monument(spot.Variant); break;
         }
-        Rlgl.PopMatrix();
     }
 
     private static void Tower(int v)
@@ -331,7 +429,7 @@ public static class Landmarks
                 for (int i = 0; i < 4; i++)
                 {
                     float rise = (time * 3 + i * 6 + k * 2) % 24;
-                    Raylib.DrawSphere(new Vector3(x + MathF.Sin(time + i) * 1.5f, 8 + rise, z), 2 + rise * 0.25f, C(steam));
+                    if (recording == null) Raylib.DrawSphere(new Vector3(x + MathF.Sin(time + i) * 1.5f, 8 + rise, z), 2 + rise * 0.25f, C(steam));
                 }
             }
             return;
@@ -343,7 +441,7 @@ public static class Landmarks
         for (int i = 0; i < 8; i++)
         {
             float rise = (time * 5 + i * 18) % 144;
-            Raylib.DrawSphere(new Vector3(MathF.Sin(i * 1.7f) * 6 + rise * 0.3f, 208 + rise, 0), 14 + rise * 0.18f, C(steam));
+            if (recording == null) Raylib.DrawSphere(new Vector3(MathF.Sin(i * 1.7f) * 6 + rise * 0.3f, 208 + rise, 0), 14 + rise * 0.18f, C(steam));
         }
     }
 
@@ -366,9 +464,9 @@ public static class Landmarks
         Box(0, 15, -1, 5.5f, 10, 5.5f, White);
         Roof(0, 20, -1, 6.5f, 6.5f, 4, 0, Rgb(170, 55, 50));
         var face = new Vector3(0, 16, -3.8f);
-        Raylib.DrawCylinderEx(face, face + new Vector3(0, 0, -0.15f), 1.9f, 1.9f, 20, C(White));
-        Raylib.DrawLine3D(face + new Vector3(0, 0, -0.2f), face + new Vector3(0, 1.4f, -0.2f), C(Rgb(20, 20, 20)));
-        Raylib.DrawLine3D(face + new Vector3(0, 0, -0.2f), face + new Vector3(1.0f, 0, -0.2f), C(Rgb(20, 20, 20)));
+        if (recording == null) Raylib.DrawCylinderEx(face, face + new Vector3(0, 0, -0.15f), 1.9f, 1.9f, 20, C(White));
+        if (recording == null) Raylib.DrawLine3D(face + new Vector3(0, 0, -0.2f), face + new Vector3(0, 1.4f, -0.2f), C(Rgb(20, 20, 20)));
+        if (recording == null) Raylib.DrawLine3D(face + new Vector3(0, 0, -0.2f), face + new Vector3(1.0f, 0, -0.2f), C(Rgb(20, 20, 20)));
         Box(0, 2, -3.2f, 3, 4, 0.2f, Wood);
     }
 
@@ -438,8 +536,7 @@ public static class Landmarks
             }
             default: // 来島海峡大橋：吊り橋（大きいので奥に置く）
             {
-                Rlgl.PushMatrix();
-                Rlgl.Translatef(0, 0, 150);
+                localZ = 150;
                 Box(0, 0.05f, 0, 600, 0.1f, 360, Rgb(55, 115, 165));
                 Box(0, 24, 0, 300, 2.5f, 10, White);
                 foreach (float tx in new[] { -60f, 60f })
@@ -463,7 +560,7 @@ public static class Landmarks
                 }
                 Cyl(-170, 0, 30, 0, 60, 40, 9, Rgb(70, 110, 75));
                 Cyl(180, 0, 60, 0, 80, 50, 9, Rgb(70, 110, 75));
-                Rlgl.PopMatrix();
+                localZ = 0;
                 break;
             }
         }
@@ -509,7 +606,7 @@ public static class Landmarks
         {
             case 1: // 湿原：草原と蛇行する川
                 Cyl(0, 0.05f, 0, 170, 170, 0.1f, 32, Rgb(150, 160, 90));
-                for (int k = 0; k < 14; k++)
+                for (int k = 0; recording == null && k < 14; k++)
                 {
                     float z1 = -120 + k * 18, z2 = z1 + 18;
                     float x1 = MathF.Sin(k * 0.8f) * 25, x2 = MathF.Sin((k + 1) * 0.8f) * 25;
@@ -527,8 +624,8 @@ public static class Landmarks
                 for (int i = 0; i < 4; i++)
                 {
                     float r = 8 + i * 9 + (time * 4 % 9);
-                    Raylib.DrawCircle3D(new Vector3(0, 0.3f, 0), r, Vector3.UnitX, 90, C(Rgb(230, 240, 245)));
-                    Raylib.DrawCircle3D(new Vector3(40, 0.3f, 50), r * 0.7f, Vector3.UnitX, 90, C(Rgb(230, 240, 245)));
+                    if (recording == null) Raylib.DrawCircle3D(new Vector3(0, 0.3f, 0), r, Vector3.UnitX, 90, C(Rgb(230, 240, 245)));
+                    if (recording == null) Raylib.DrawCircle3D(new Vector3(40, 0.3f, 50), r * 0.7f, Vector3.UnitX, 90, C(Rgb(230, 240, 245)));
                 }
                 Box(0, 40, 90, 400, 3, 12, White);
                 Box(-70, 40, 90, 4, 80, 4, White);
