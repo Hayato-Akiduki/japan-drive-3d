@@ -57,6 +57,7 @@ public static class Spots
         S("岡谷", "諏訪大社", LandmarkType.Torii);
         S("東京", "東京タワー", LandmarkType.Tower);
         S("東京", "浅草寺", LandmarkType.Temple);
+        S("東京", "野獣邸", LandmarkType.Monument);
         S("甲府", "武田神社", LandmarkType.Torii);
         S("千葉", "成田山新勝寺", LandmarkType.Pagoda);
         S("横浜", "横浜マリンタワー", LandmarkType.Tower, 1);

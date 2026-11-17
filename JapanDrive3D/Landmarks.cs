@@ -182,6 +182,15 @@ public static class Landmarks
     {
         switch (spot.Name)
         {
+            case "野獣邸":
+                Box(0, 3, 0, 10, 6, 8, Rgb(224, 211, 187));
+                Roof(0, 6, 0, 11, 9, 1.6f, 0.55f, RoofDark);
+                Box(-2.5f, 1.2f, -4, 1.4f, 2.4f, 0.2f, Wood);
+                var window = Rgb(110, 153, 169);
+                Box(2.5f, 1.7f, -4, 2.5f, 1.4f, 0.2f, window);
+                for (int x = -3; x <= 3; x += 3)
+                    Box(x, 4.6f, -4, 1.8f, 1.4f, 0.2f, window);
+                return;
             case "鳥取砂丘":
                 for (int i = 0; i < 5; i++)
                     Roof(-28 + i * 13, 0, 8 + i % 2 * 12, 34, 22, 4 + i % 3 * 2, 0.16f, Rgb(224 + i * 3, 188 + i * 3, 130));
