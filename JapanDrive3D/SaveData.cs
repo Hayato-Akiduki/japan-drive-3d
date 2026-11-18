@@ -53,10 +53,11 @@ public sealed class SaveData
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(FilePath)!);
-            string tmp = FilePath + ".tmp";
+            string path = Path.GetFullPath(FilePath);
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            string tmp = path + ".tmp";
             File.WriteAllText(tmp, JsonSerializer.Serialize(this, Options));
-            File.Move(tmp, FilePath, true);
+            File.Move(tmp, path, true);
         }
         catch
         {

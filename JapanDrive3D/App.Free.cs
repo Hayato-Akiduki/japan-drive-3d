@@ -218,7 +218,7 @@ public sealed partial class App
         gearCapKmh = hasHardCap ? effectiveTop : 9999f;
         engineBrakeDecel = 0f;
 
-        if (hasHardCap && kmh > effectiveTop + 2.5f)
+        if (hasHardCap && (kmh > effectiveTop + 2.5f || kmh > freeCap))
         {
             // 高速走行中に低いギアへシフトダウン、または速度上限到達時の減速
             revLimiting = kmh > top + 2.5f;
