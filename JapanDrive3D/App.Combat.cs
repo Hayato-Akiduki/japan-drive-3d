@@ -113,15 +113,25 @@ public sealed partial class App
 
     private void SwitchVehicle()
     {
+        int i = Array.IndexOf(PlayerKinds, playerKind);
+        var next = PlayerKinds[(i + 1) % PlayerKinds.Length];
+        while (!freeRoam && IsFlyer(next)) next = PlayerKinds[(Array.IndexOf(PlayerKinds, next) + 1) % PlayerKinds.Length];
+        SelectVehicle(next);
+    }
+
+    private void SelectVehicle(VehicleKind next)
+    {
+        if (next == playerKind || fadeDir != 0) return;
+        if (!freeRoam && IsFlyer(next))
+        {
+            game.AddLog("航空機はフリーモードで選べます。");
+            return;
+        }
         if (!freeRoam && (pstate != PlayerState.Road || game.OnSea))
         {
             game.AddLog("海の上では乗り換えできません。");
             return;
         }
-        int i = Array.IndexOf(PlayerKinds, playerKind);
-        var next = PlayerKinds[(i + 1) % PlayerKinds.Length];
-        // 空を飛ぶ乗り物はフリーモードだけ
-        while (!freeRoam && IsFlyer(next)) next = PlayerKinds[(Array.IndexOf(PlayerKinds, next) + 1) % PlayerKinds.Length];
         BeginFade(() =>
         {
             playerKind = next;
@@ -135,7 +145,7 @@ public sealed partial class App
             {
                 VehicleKind.Tank => "（マウス・Z/X で砲塔、左クリック・Ctrl で発射）",
                 VehicleKind.Amphibious => "（フェリー航路を自力で渡れます。橋の左端から海へダイブも！）",
-                VehicleKind.Horse => "（武士が駆ける。燃料いりません）",
+                VehicleKind.Horse => "（カウボーイの愛馬。燃料いりません）",
                 VehicleKind.Hikyaku => "（江戸の飛脚が走って届ける。燃料いりません）",
                 VehicleKind.Helicopter => "（Space 上昇・Shift 下降、左クリック・Ctrl 長押しで機関銃連射！）",
                 VehicleKind.Airplane => "（↑で加速し、140km/h 以上で Space を押すと離陸。遅すぎると失速します）",

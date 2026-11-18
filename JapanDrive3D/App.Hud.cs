@@ -36,10 +36,10 @@ public sealed partial class App
         string help = detour != null
             ? "↑↓ アクセル/ブレーキ　←→ ハンドル　H AT/MT(Q/E・Shift ギア)　Enter 高速に戻る　B スタンプ帳　C 視点"
             : playerKind == VehicleKind.Tank
-                ? "↑↓ 走る/止まる　←→ 車線　H AT/MT(Shift・ホイール ギア)　マウス・Z/X 砲塔　左クリック・Ctrl 発射　V 車両　Q/E 次の分岐　M 地図"
+                ? "↑↓ 走る/止まる　←→ 車線　H AT/MT(Shift・ホイール ギア)　マウス・Z/X 砲塔　左クリック・Ctrl 発射　1-5/V 車両　Q/E 次の分岐　M 地図"
                 : playerKind == VehicleKind.Amphibious
-                    ? "↑↓ 走る/止まる　←→ 車線（橋の左端から海へダイブ）　H AT/MT(Shift/Ctrl ギア)　V 車両　Q/E 次の分岐　P 寄り道　M 地図"
-                    : "↑↓ アクセル/ブレーキ　←→ 車線　H AT/MT切替(Shift/Ctrl・ホイール ギア)　Q/E・1-9 次の分岐　T おまかせ　P 寄り道　V 車両　M 地図　F 給油";
+                    ? "↑↓ 走る/止まる　←→ 車線（橋の左端から海へダイブ）　H AT/MT(Shift/Ctrl ギア)　1-5/V 車両　Q/E 次の分岐　P 寄り道　M 地図"
+                    : "↑↓ アクセル/ブレーキ　←→ 車線　H AT/MT切替(Shift/Ctrl・ホイール ギア)　Q/E・Alt+1-9 次の分岐　T おまかせ　P 寄り道　1-5/V 車両　M 地図　F 給油";
         var hm = Measure(help, 13);
         Text(help, (sw - hm.X) / 2, sh - 24 * u, 13, new Color(255, 255, 255, 170));
 
@@ -64,7 +64,7 @@ public sealed partial class App
         string head = !game.FreeDrive && !byNav ? $"次の分岐：{city.Name}（停車して選ぶ）"
             : byNav ? $"次の分岐：{city.Name}（ナビ）" : $"次の分岐：{city.Name}";
         Text(head, x + 12 * u, y + 8 * u, 15, Color.White);
-        Text("Q/E・数字で変更　T おまかせ切替", x + 12 * u, y + 30 * u, 12, Sub);
+        Text("Q/E・Alt+数字で変更　T おまかせ切替", x + 12 * u, y + 30 * u, 12, Sub);
         float cy = y + 52 * u;
         for (int i = 0; i < city.Roads.Count; i++)
         {
@@ -494,7 +494,7 @@ public sealed partial class App
         float x = (sw - w) / 2, y = sh * 0.3f;
         Panel(x, y, w, h, new Color(10, 30, 25, 225));
         TextCentered($"{city.Name}　どの道路へ進みますか？", sw / 2f, y + 14 * u, 22, Color.White);
-        TextCentered("数字キーで選択（F 給油・M 地図でナビ設定）", sw / 2f, y + 46 * u, 13, Sub);
+        TextCentered("Alt+数字で選択（F 給油・M 地図でナビ設定）", sw / 2f, y + 46 * u, 13, Sub);
         float cy = y + 76 * u;
         for (int i = 0; i < city.Roads.Count; i++)
         {

@@ -233,7 +233,7 @@ public sealed partial class App
             if (MapData.TryGet(demoAt, out var targetCity)) game.PlaceAt(targetCity);
             else game.AddLog($"都市「{demoAt}」が見つからないため東京から開始します");
         }
-        if (!freeRoam) game.AddLog("Q/E か数字キーで次の分岐を選べます（選ばなければ直進）。P で名所に寄り道。");
+        if (!freeRoam) game.AddLog("Q/E か Alt＋数字キーで次の分岐を選べます（選ばなければ直進）。P で名所に寄り道。");
         if (shotFile != null && demoDetour >= 0) StartDetour(Spots.All[Math.Clamp(demoDetour, 0, Spots.All.Count - 1)]);
         if (demoBook)
         {
@@ -297,7 +297,7 @@ public sealed partial class App
         {
             var road = game.PlannedRoad();
             if (road != null) game.Depart(road);
-            else game.AddLog("先に数字キー（または M の地図）で道路を選んでください。");
+            else game.AddLog("先に Alt＋数字キー（または M の地図）で道路を選んでください。");
         }
         upWasDown = up;
         game.Accel = up;
@@ -646,6 +646,19 @@ public sealed partial class App
             if (Raylib.IsKeyPressed(KeyboardKey.B) || Raylib.IsKeyPressed(KeyboardKey.Escape)) stampBook = false;
             return;
         }
+        bool roadShortcut = Raylib.IsKeyDown(KeyboardKey.LeftAlt) || Raylib.IsKeyDown(KeyboardKey.RightAlt);
+        if (!bigMap && detour == null && !roadShortcut)
+        {
+            for (int i = 0; i < PlayerKinds.Length; i++)
+            {
+                if (Raylib.IsKeyPressed((KeyboardKey)((int)KeyboardKey.One + i)) ||
+                    Raylib.IsKeyPressed((KeyboardKey)((int)KeyboardKey.Kp1 + i)))
+                {
+                    SelectVehicle(PlayerKinds[i]);
+                    break;
+                }
+            }
+        }
         if (freeRoam)
         {
             HandleFreeKeys();
@@ -665,9 +678,9 @@ public sealed partial class App
 
         HandleTransmissionKeys(allowQE: false);
 
-        // 数字キー：停車中は出発、走行中は次の分岐の予約
+        // Alt＋数字キー：停車中は出発、走行中は次の分岐の予約
         var junction = game.JunctionCity;
-        for (int i = 0; i < 9 && i < junction.Roads.Count; i++)
+        for (int i = 0; roadShortcut && i < 9 && i < junction.Roads.Count; i++)
         {
             if (Raylib.IsKeyPressed((KeyboardKey)((int)KeyboardKey.One + i)) ||
                 Raylib.IsKeyPressed((KeyboardKey)((int)KeyboardKey.Kp1 + i)))

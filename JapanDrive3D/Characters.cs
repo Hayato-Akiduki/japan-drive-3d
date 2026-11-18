@@ -5,7 +5,7 @@ using static JapanDrive.Draw;
 namespace JapanDrive;
 
 /// <summary>
-/// 馬（武士が乗る）と飛脚。走る足の動きをアニメーションする。
+/// 馬（カウボーイが乗る）と飛脚。走る足の動きをアニメーションする。
 /// ローカル座標：+Z が前、+Y が上。
 /// </summary>
 public static class Characters
@@ -97,21 +97,47 @@ public static class Characters
         Raylib.DrawCube(new Vector3(0, -0.4f, 0), 0.14f, 0.85f, 0.14f, C(dark));
         Rlgl.PopMatrix();
 
-        // 鞍と乗り手（陣笠の侍）
+        // ウエスタンサドル、鞍敷き、左右の革製サドルバッグ
         float ry = 1.82f + bob;
-        Box(0, ry, -0.05f, 0.62f, 0.1f, 0.65f, Rgb(160, 40, 35));
-        var kimono = Rgb(45, 70, 140);
-        Box(0.3f, ry - 0.2f, 0.05f, 0.14f, 0.5f, 0.2f, kimono);        // 足
-        Box(-0.3f, ry - 0.2f, 0.05f, 0.14f, 0.5f, 0.2f, kimono);
-        Box(0, ry + 0.38f, -0.05f, 0.44f, 0.62f, 0.3f, kimono);        // 胴
-        Box(0, ry + 0.12f, -0.05f, 0.46f, 0.1f, 0.32f, Rgb(200, 170, 60)); // 帯
-        Limb(0.26f, ry + 0.62f, 0, -60, 0.5f, 0.11f, kimono, Skin);    // 手綱を持つ腕
-        Limb(-0.26f, ry + 0.62f, 0, -60, 0.5f, 0.11f, kimono, Skin);
+        var leather = Rgb(105, 57, 30);
+        var denim = Rgb(53, 79, 112);
+        var shirt = Rgb(222, 196, 150);
+        var hat = Rgb(178, 135, 76);
+        Box(0, ry - 0.04f, -0.12f, 0.78f, 0.13f, 0.95f, Rgb(164, 65, 43));
+        Box(0, ry + 0.04f, -0.08f, 0.63f, 0.12f, 0.7f, leather);
+        Box(0, ry + 0.13f, -0.4f, 0.62f, 0.23f, 0.12f, leather);
+        Raylib.DrawCylinder(new Vector3(0, ry + 0.1f, 0.28f), 0.055f, 0.065f, 0.18f, 8, C(leather));
+        Raylib.DrawSphereEx(new Vector3(0, ry + 0.28f, 0.28f), 0.075f, 6, 8, C(leather));
+        foreach (float side in new[] { -1f, 1f })
+        {
+            Box(side * 0.44f, ry - 0.23f, -0.65f, 0.22f, 0.45f, 0.42f, leather);
+            Box(side * 0.46f, ry - 0.04f, -0.65f, 0.24f, 0.08f, 0.46f, Rgb(134, 78, 40));
+            Box(side * 0.56f, ry - 0.2f, -0.65f, 0.025f, 0.12f, 0.07f, Rgb(205, 170, 85));
+            Box(side * 0.31f, ry - 0.18f, 0.05f, 0.16f, 0.5f, 0.22f, denim);
+            Box(side * 0.33f, ry - 0.48f, 0.12f, 0.19f, 0.23f, 0.34f, leather);
+            Box(side * 0.33f, ry - 0.61f, 0.12f, 0.25f, 0.045f, 0.38f, Rgb(150, 148, 138));
+        }
+
+        // シャツ、革のベスト、ベルト、赤いバンダナ
+        Box(0, ry + 0.38f, -0.05f, 0.44f, 0.62f, 0.3f, shirt);
+        Box(0, ry + 0.39f, -0.22f, 0.46f, 0.54f, 0.055f, leather);
+        Box(-0.15f, ry + 0.39f, 0.12f, 0.15f, 0.54f, 0.055f, leather);
+        Box(0.15f, ry + 0.39f, 0.12f, 0.15f, 0.54f, 0.055f, leather);
+        Box(0, ry + 0.12f, -0.05f, 0.46f, 0.085f, 0.33f, Black);
+        Box(0, ry + 0.12f, 0.13f, 0.1f, 0.09f, 0.035f, Rgb(205, 170, 85));
+        Box(0, ry + 0.67f, -0.02f, 0.25f, 0.09f, 0.31f, Rgb(174, 43, 33));
+        Box(0, ry + 0.59f, 0.15f, 0.12f, 0.17f, 0.04f, Rgb(174, 43, 33));
+        Limb(0.26f, ry + 0.62f, 0, -60, 0.5f, 0.11f, shirt, Skin);
+        Limb(-0.26f, ry + 0.62f, 0, -60, 0.5f, 0.11f, shirt, Skin);
+        foreach (float side in new[] { -1f, 1f })
+            Raylib.DrawCylinderEx(new Vector3(side * 0.25f, ry + 0.36f, 0.42f),
+                new Vector3(side * 0.15f, 2.0f + bob, 1.4f), 0.015f, 0.015f, 6, C(leather));
         Raylib.DrawSphereEx(new Vector3(0, ry + 0.86f, -0.03f), 0.15f, 8, 8, C(Skin));
-        Raylib.DrawCylinder(new Vector3(0, ry + 0.95f, -0.03f), 0.02f, 0.36f, 0.14f, 12, C(Rgb(35, 30, 30)));
-        // 背中の旗指物
-        Box(0, ry + 1.0f, -0.25f, 0.03f, 1.2f, 0.03f, Rgb(90, 70, 50));
-        Box(-0.18f, ry + 1.35f, -0.25f, 0.34f, 0.55f, 0.02f, Rgb(220, 40, 40));
+
+        // 広いつばと高さのあるクラウンでカウボーイハットを表現
+        Raylib.DrawCylinder(new Vector3(0, ry + 0.97f, -0.03f), 0.35f, 0.35f, 0.045f, 16, C(hat));
+        Raylib.DrawCylinder(new Vector3(0, ry + 1.01f, -0.03f), 0.14f, 0.19f, 0.23f, 12, C(hat));
+        Raylib.DrawCylinder(new Vector3(0, ry + 1.02f, -0.03f), 0.185f, 0.19f, 0.055f, 12, C(leather));
     }
 
     private static void Hikyaku(float phase)

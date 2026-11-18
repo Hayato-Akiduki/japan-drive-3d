@@ -1335,14 +1335,14 @@ public sealed partial class App
         DrawCrosshair(u);
 
         string help = playerKind == VehicleKind.Helicopter
-            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降　マウス・Z/X 照準　左クリック・Ctrl長押し 機関銃　V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点"
+            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降　マウス・Z/X 照準　左クリック・Ctrl長押し 機関銃　1-8/V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点"
             : playerKind == VehicleKind.Fighter
-            ? "↑↓ 加速/減速　←→ 旋回　Space 上昇（150km/h〜）　Shift 下降　左クリック・Ctrl 爆弾投下　V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点"
+            ? "↑↓ 加速/減速　←→ 旋回　Space 上昇（150km/h〜）　Shift 下降　左クリック・Ctrl 爆弾投下　1-8/V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点"
             : IsFlyer(playerKind)
-            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降（140km/h 以上で離陸）　V 乗り物　M 地図・ワープ　F4 速度上限　B スタンプ帳　C 視点"
+            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降（140km/h 以上で離陸）　1-8/V 乗り物　M 地図・ワープ　F4 速度上限　B スタンプ帳　C 視点"
             : playerKind == VehicleKind.Tank
-            ? "↑↓ 前進/後退　←→ ハンドル　H AT/MT切替(Q/E・Shift・ホイール ギア)　マウス・Z/X 砲塔　左クリック・Ctrl 発射　V 乗り物　M 地図　F4 速度上限"
-            : "↑↓ アクセル/ブレーキ　←→ ハンドル　Space ドリフト　H AT/MT切替（E/Shift シフトUP・Q/Ctrl シフトDOWN）　V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点";
+            ? "↑↓ 前進/後退　←→ ハンドル　H AT/MT切替(Q/E・Shift・ホイール ギア)　マウス・Z/X 砲塔　左クリック・Ctrl 発射　1-8/V 乗り物　M 地図　F4 速度上限"
+            : "↑↓ アクセル/ブレーキ　←→ ハンドル　Space ドリフト　H AT/MT切替（E/Shift シフトUP・Q/Ctrl シフトDOWN）　1-8/V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点";
         var hm = Measure(help, 13);
         Text(help, (sw - hm.X) / 2, sh - 24 * u, 13, new Color(255, 255, 255, 170));
 
