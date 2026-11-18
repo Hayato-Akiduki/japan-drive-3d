@@ -184,13 +184,7 @@ public static class Landmarks
         switch (spot.Name)
         {
             case "野獣邸":
-                Box(0, 3, 0, 10, 6, 8, Rgb(224, 211, 187));
-                Roof(0, 6, 0, 11, 9, 1.6f, 0.55f, RoofDark);
-                Box(-2.5f, 1.2f, -4, 1.4f, 2.4f, 0.2f, Wood);
-                var window = Rgb(110, 153, 169);
-                Box(2.5f, 1.7f, -4, 2.5f, 1.4f, 0.2f, window);
-                for (int x = -3; x <= 3; x += 3)
-                    Box(x, 4.6f, -4, 1.8f, 1.4f, 0.2f, window);
+                YajuHouse();
                 return;
             case "宗谷岬":
                 Box(0, 0.55f, 0, 12, 1.1f, 7, Stone);
@@ -278,6 +272,70 @@ public static class Landmarks
             case LandmarkType.Lake: Lake(spot.Variant, time); break;
             case LandmarkType.Monument: Monument(spot.Variant); break;
         }
+    }
+
+    private static void YajuHouse()
+    {
+        var siding = Rgb(177, 181, 178);
+        var tile = Rgb(135, 128, 125);
+        var concrete = Rgb(199, 197, 183);
+        var railing = Rgb(184, 189, 186);
+        var shadow = Rgb(52, 58, 57);
+
+        // 提供画像を参考にした外観。正面は -Z 側。
+        Box(-1.6f, 0.45f, 0, 6.8f, 0.9f, 7.5f, Stone);
+        Box(-1.6f, 3.1f, 0, 6.8f, 5.3f, 7.5f, siding);
+        Box(0, 6.2f, 1.4f, 10, 1.3f, 4.7f, tile);
+        Box(4.3f, 4.7f, 1, 1.4f, 9.4f, 5.5f, tile);
+        Box(-0.5f, 7, 2.5f, 8.4f, 0.3f, 2.4f, RoofDark);
+        Box(-1.5f, 7.8f, 3.4f, 6.8f, 1.4f, 0.2f, concrete);
+        Box(4.3f, 9.45f, 1, 1.6f, 0.15f, 5.7f, Stone);
+
+        // シャッターと張り出した黒い庇、外壁の縦目地。
+        Box(-3.4f, 2.55f, -3.82f, 2.5f, 3.4f, 0.18f, White);
+        for (int i = 0; i < 20; i++)
+            Box(-3.4f, 0.95f + i * 0.16f, -3.93f, 2.3f, 0.025f, 0.04f, siding);
+        Box(-3.3f, 4.65f, -4.3f, 3.5f, 0.2f, 2, RoofDark);
+        Segment(-4.8f, 4.1f, -4.8f, 4.6f, -4.7f, 0.1f, 0.1f, shadow);
+        for (int i = 0; i < 16; i++)
+            Box(-1.9f + i * 0.23f, 3.05f, -3.77f, 0.025f, 5.1f, 0.03f, Stone);
+        Box(-1.6f, 5.8f, -0.2f, 7.2f, 0.2f, 7.8f, RoofDark);
+
+        // 屋上のバルコニーと細い金属手すり。
+        Box(-0.7f, 6.1f, -2.2f, 8.6f, 0.25f, 2, concrete);
+        Box(-0.7f, 7.15f, -3.15f, 8.6f, 0.1f, 0.1f, railing);
+        Box(-0.7f, 6.35f, -3.15f, 8.6f, 0.1f, 0.1f, railing);
+        for (int i = 0; i <= 32; i++)
+            Box(-4.9f + i * 0.26f, 6.7f, -3.15f, 0.055f, 0.9f, 0.055f, railing);
+
+        // 右側の階段、門柱、奥まった玄関。
+        for (int i = 0; i < 7; i++)
+        {
+            float height = (i + 1) * 0.24f;
+            Box(2.7f, height / 2, -6 + i * 0.45f, 2.3f, height, 0.46f, tile);
+        }
+        Box(2.7f, 0.84f, -1.5f, 2.3f, 1.68f, 3, concrete);
+        Box(2.7f, 3.25f, -0.1f, 1.5f, 3.1f, 0.12f, shadow);
+        Box(2.7f, 4.9f, -0.7f, 2.2f, 0.18f, 1.6f, RoofDark);
+        Box(1.3f, 1.7f, -4.6f, 0.35f, 3.4f, 3.4f, concrete);
+        Box(0.8f, 2.15f, -2.8f, 0.7f, 4.3f, 0.55f, concrete);
+        Box(0.8f, 3.3f, -3.1f, 0.34f, 0.28f, 0.06f, shadow);
+        Box(0.8f, 2.65f, -3.1f, 0.45f, 0.1f, 0.06f, shadow);
+        Box(4.15f, 1.7f, -4.6f, 0.6f, 3.4f, 3.4f, concrete);
+        Box(-0.1f, 2.4f, -5.1f, 0.16f, 4.8f, 0.16f, Rgb(109, 67, 43));
+
+        // 石積みと右手の植え込み。
+        for (int i = 0; i < 5; i++)
+        {
+            float z = -5.8f + i * 1.35f;
+            Ball(5, 0.45f, z, 0.65f, Stone);
+            Ball(5.1f, 1.1f, z, 0.55f, Rgb(111, 115, 94));
+            Ball(5.2f, 2, z, 0.85f, Rgb(58, 78, 40));
+        }
+        Cyl(4.9f, 1.3f, -2.7f, 0.16f, 0.22f, 2.7f, 6, Wood);
+        for (int i = -3; i <= 3; i++)
+            Segment(4.9f, 4, 4.9f + i * 0.48f, 4.6f - Math.Abs(i) * 0.2f,
+                -2.7f, 0.18f, 0.3f, Rgb(46, 73, 43));
     }
 
     private static void Tower(int v)
