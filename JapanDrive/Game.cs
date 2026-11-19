@@ -430,7 +430,7 @@ public sealed class Game
     // ---------------- 表示用 ----------------
 
     public static PointF ToWorld(double lat, double lon) =>
-        new((float)((lon - 137.0) * Math.Cos(36 * Math.PI / 180)), (float)(37.0 - lat));
+        new((float)(((lon < 0 ? lon + 360 : lon) - 137.0) * Math.Cos(36 * Math.PI / 180)), (float)(37.0 - lat));
 
     public static PointF ToWorld(City c) => ToWorld(c.Lat, c.Lon);
 

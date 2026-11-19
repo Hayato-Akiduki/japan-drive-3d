@@ -380,15 +380,15 @@ public static class JapanOutline
 
     /// <summary>地図表示用の粗い海岸線（大きな島＋樺太・韓国・台湾）。</summary>
     public static readonly (double Lat, double Lon)[][] Islands =
-        JapanGeo.Outline.Select(Decode).Concat(ExtraIslands).ToArray();
+        JapanGeo.Outline.Select(Decode).Concat(ExtraIslands).Concat(NorthAmericaGeo.Land.Select(Decode)).ToArray();
 
     /// <summary>細かい海岸線（小さな島＋樺太・韓国・台湾）。</summary>
     public static readonly (double Lat, double Lon)[][] Detailed =
-        JapanGeo.Land.Select(Decode).Concat(ExtraIslands).ToArray();
+        JapanGeo.Land.Select(Decode).Concat(ExtraIslands).Concat(NorthAmericaGeo.Land.Select(Decode)).ToArray();
 
     /// <summary>全湖沼（日本＋樺太・韓国・台湾）。</summary>
     public static readonly (string Name, (double Lat, double Lon)[] Points)[] AllLakes =
-        JapanGeo.Lakes.Select(l => (l.Name, Decode(l.Points))).Concat(ExtraLakes).ToArray();
+        JapanGeo.Lakes.Select(l => (l.Name, Decode(l.Points))).Concat(ExtraLakes).Concat(NorthAmericaGeo.Lakes.Select(l => (l.Name, Decode(l.Points)))).ToArray();
 
     /// <summary>全河川（日本＋樺太・韓国・台湾）。</summary>
     public static readonly (string Name, int Rank, (double Lat, double Lon)[] Points)[] AllRivers =

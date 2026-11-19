@@ -755,7 +755,7 @@ public sealed partial class App
         }
 
         // 11) 主要都市マーカー＆最優先ラベル
-        static bool IsKeyOverseas(string name) => name is "豊原" or "オハ" or "カムチャツカ" or "ウラジオストク" or "ハバロフスク" or "ソウル" or "釜山" or "済州" or "平壌" or "瀋陽" or "大連" or "北京" or "青島" or "上海" or "福州" or "アモイ" or "香港" or "台北" or "高雄" or "マニラ" or "小笠原";
+        static bool IsKeyOverseas(string name) => name is "豊原" or "オハ" or "カムチャツカ" or "ウラジオストク" or "ハバロフスク" or "ソウル" or "釜山" or "済州" or "平壌" or "瀋陽" or "大連" or "北京" or "青島" or "上海" or "福州" or "アモイ" or "香港" or "台北" or "高雄" or "マニラ" or "小笠原" or "ホノルル" or "サンフランシスコ" or "ニューヨーク";
         foreach (var c in MapData.Cities.OrderByDescending(c => c.IsGoal || c == game.StartCity || c == game.NavTarget ? 2 : IsKeyOverseas(c.Name) ? 1 : 0))
         {
             var p = to(Game.ToWorld(c));
@@ -924,7 +924,7 @@ public sealed partial class App
         if (Math.Abs(wheel) > 0.001f)
         {
             var worldUnderMouse = new Vector2(center.X + (mouse.X - origin.X) / scale, center.Y + (mouse.Y - origin.Y) / scale);
-            bigMapZoom = Math.Clamp(bigMapZoom * MathF.Pow(1.22f, wheel), 0.8f, 28.0f);
+            bigMapZoom = Math.Clamp(bigMapZoom * MathF.Pow(1.22f, wheel), 0.8f, 100.0f);
             float newScale = baseScale * bigMapZoom;
             var newCenter = worldUnderMouse - new Vector2((mouse.X - origin.X) / newScale, (mouse.Y - origin.Y) / newScale);
             bigMapPan = newCenter - baseCenter;
@@ -979,7 +979,7 @@ public sealed partial class App
             if (Raylib.IsMouseButtonReleased(MouseButton.Left)) clickedLeft = true;
             if (Raylib.IsMouseButtonReleased(MouseButton.Right)) clickedRight = true;
         }
-        bigMapPan.X = Math.Clamp(bigMapPan.X, -48f, 48f);
+        bigMapPan.X = Math.Clamp(bigMapPan.X, -120f, 120f);
         bigMapPan.Y = Math.Clamp(bigMapPan.Y, -48f, 48f);
         return bigMapMoved;
     }

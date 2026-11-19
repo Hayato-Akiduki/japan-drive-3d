@@ -55,7 +55,7 @@ public sealed class Place
 public static class LandRaster
 {
     public const double Lon0 = 110.0, Lat0 = 12.0, Res = 0.005;
-    public const int W = 10200, H = 8800;
+    public const int W = 40000, H = 14600;
     private static readonly List<(string Name, int Rank, (double Lat, double Lon)[] LatLon)> SmoothRivers = new();
     private static readonly ulong[] Bits = Build();
 
@@ -229,8 +229,16 @@ public static class LandRaster
                 }
                 xs.Sort();
                 for (int k = 0; k + 1 < xs.Count; k += 2)
-                    for (int c = (int)Math.Ceiling(xs[k] - 0.5); c <= (int)Math.Floor(xs[k + 1] - 0.5); c++)
-                        Set(bits, r, c, value);
+                {
+                    int first = Math.Max(0, (int)Math.Ceiling(xs[k] - 0.5));
+                    int last = Math.Min(W - 1, (int)Math.Floor(xs[k + 1] - 0.5));
+                    int c = first;
+                    while (c <= last && ((r * W + c) & 63) != 0) Set(bits, r, c++, value);
+                    int words = (last - c + 1) / 64;
+                    if (words > 0) Array.Fill(bits, value ? ulong.MaxValue : 0UL, (r * W + c) >> 6, words);
+                    c += words * 64;
+                    while (c <= last) Set(bits, r, c++, value);
+                }
             }
         }
     }
