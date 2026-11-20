@@ -13,6 +13,8 @@ public sealed partial class App
     private bool freeRoam;
     private bool freeSpeedLimit;
     private FreeWorld? free;
+    private MoonWorld? moon;
+    private bool onMoon;
     private float heading;          // 北=0、東=90（度）
     private float freeKmh;
     private float freeY;
@@ -27,7 +29,7 @@ public sealed partial class App
     private float groundLevel;
     private bool stallWarned;
 
-    private static bool IsFlyer(VehicleKind k) => k is VehicleKind.Helicopter or VehicleKind.Airplane or VehicleKind.Fighter;
+    private static bool IsFlyer(VehicleKind k) => k is VehicleKind.Helicopter or VehicleKind.Airplane or VehicleKind.Fighter or VehicleKind.Spaceship;
     private bool IsGearboxVehicle => !IsFlyer(playerKind) && playerKind is not (VehicleKind.Horse or VehicleKind.Hikyaku);
 
     // ---- マニュアル操作（6速MT・タコメーター・ドリフト） ----
@@ -265,6 +267,8 @@ public sealed partial class App
     {
         free?.Dispose();
         free = new FreeWorld(scene);
+        moon = null;
+        onMoon = false;
         var city = MapData.Get(demoAt ?? "東京");
         (free.PX, free.PZ) = FreeWorld.CityPos(city);
         if (demoLatLon is (double dLat, double dLon)) (free.PX, free.PZ) = FreeWorld.FromLatLon(dLat, dLon);
@@ -305,6 +309,7 @@ public sealed partial class App
             ? $"フリーモード：前回の続き（{free.NearestPlace(free.PX, free.PZ).Name}付近）から再開しました（{limitNote}）。"
             : $"フリーモード：{free.NearestPlace(free.PX, free.PZ).Name}から出発。{limitNote}。");
         game.AddLog("各地の名所に近づくとスタンプがもらえます。M の地図でクリックした場所へワープもできます。");
+        if (demoMoon) EnterMoon(landed: !IsFlyer(playerKind));
     }
 
     private static float FreeSpeedCapKmh(VehicleKind kind, bool onWater)
@@ -325,12 +330,14 @@ public sealed partial class App
             VehicleKind.Helicopter => 280f,
             VehicleKind.Airplane => 450f,
             VehicleKind.Fighter => 2400f,
+            VehicleKind.Spaceship => 1800f,
             _ => 180f,
         };
     }
 
     private static float Accel(VehicleKind k) => k switch
     {
+        VehicleKind.Spaceship => 180,
         VehicleKind.Fighter => 120,
         VehicleKind.Sports => 60,
         VehicleKind.Tank => 24,
@@ -351,6 +358,11 @@ public sealed partial class App
 
     private void UpdateFree(float dt)
     {
+        if (onMoon && moon != null)
+        {
+            UpdateMoon(dt);
+            return;
+        }
         var f = free!;
         bool up = Raylib.IsKeyDown(KeyboardKey.Up) || Raylib.IsKeyDown(KeyboardKey.W);
         bool down = Raylib.IsKeyDown(KeyboardKey.Down) || Raylib.IsKeyDown(KeyboardKey.S);
@@ -492,7 +504,7 @@ public sealed partial class App
         }
 
         if (flyer && airborne)
-            heading += steer * (playerKind == VehicleKind.Helicopter ? 60 : playerKind == VehicleKind.Fighter ? 55 : 45) * dt;
+            heading += steer * (playerKind == VehicleKind.Helicopter ? 60 : playerKind is VehicleKind.Fighter or VehicleKind.Spaceship ? 55 : 45) * dt;
         else if (!carAir)
         {
             float turn = 75f / (1 + Math.Abs(freeKmh) / 250f) * Math.Min(1, Math.Abs(freeKmh) / 8f);
@@ -514,6 +526,14 @@ public sealed partial class App
             float target = airborne ? -Math.Clamp(freeKmh / 25f, -8, 14) : 0;   // 前進中は機首を下げる
             pitch += Math.Clamp(target - pitch, -30 * dt, 30 * dt);
         }
+        else if (playerKind == VehicleKind.Spaceship)
+        {
+            // 宇宙船：VTOL垂直上昇＆高高度ロケット加速（約11秒で高度3万m・宇宙へ到達）
+            vs = (climb ? 55f : descend ? -32f : 0f) * (1f + Math.Max(0f, altitude) / 110f);
+            freeY += vs * dt;
+            float target = climb ? 22f : descend ? -18f : airborne ? Math.Clamp(-freeKmh / 160f, -6f, 0f) : 0f;
+            pitch += Math.Clamp(target - pitch, -40 * dt, 40 * dt);
+        }
         else if (playerKind is VehicleKind.Airplane or VehicleKind.Fighter)
         {
             float stallKmh = playerKind == VehicleKind.Fighter ? 150 : 140;
@@ -534,8 +554,16 @@ public sealed partial class App
         }
         if (freeY > 30000)
         {
-            freeY = 30000;
-            if (prevAlt < 29000) game.AddLog("高度3万m：これ以上は宇宙です！");
+            if (playerKind == VehicleKind.Spaceship)
+            {
+                freeY = 30000;
+                if (fadeDir == 0) BeginFade(() => EnterMoon(landed: false));
+            }
+            else
+            {
+                freeY = 30000;
+                if (prevAlt < 29000) game.AddLog("高度3万m：これ以上は宇宙です！（宇宙船なら月へ行けます）");
+            }
         }
 
         // ---- 前へ進む（建物・急な山にはぶつかる） ----
@@ -678,9 +706,9 @@ public sealed partial class App
         }
         prevAirborne = flyer && altitude > 0.5f;
         crashedThisFrame = false;
-        float bankTarget = flyer && altitude > 0.5f ? steer * (playerKind == VehicleKind.Helicopter ? 12 : playerKind == VehicleKind.Fighter ? 42 : 35) : 0;
+        float bankTarget = flyer && altitude > 0.5f ? steer * (playerKind == VehicleKind.Helicopter ? 12 : playerKind == VehicleKind.Fighter ? 42 : playerKind == VehicleKind.Spaceship ? 28 : 35) : 0;
         bank += (bankTarget - bank) * Math.Min(1, dt * 3);
-        rotor += dt * (playerKind == VehicleKind.Helicopter ? 1400 : playerKind is VehicleKind.Airplane or VehicleKind.Fighter ? 400 + Math.Abs(freeKmh) * 6 : 0);
+        rotor += dt * (playerKind == VehicleKind.Helicopter ? 1400 : playerKind is VehicleKind.Airplane or VehicleKind.Fighter or VehicleKind.Spaceship ? 400 + Math.Abs(freeKmh) * 6 : 0);
         rotor %= 360000;
 
         // 高いところ（山の上・空）ほど遠くまで見えるようにする
@@ -778,7 +806,11 @@ public sealed partial class App
         if (Raylib.IsKeyPressed(KeyboardKey.V)) SwitchVehicle();
         if (Raylib.IsKeyPressed(KeyboardKey.C)) cockpit = !cockpit;
         if (Raylib.IsKeyPressed(KeyboardKey.B)) stampBook = true;
-        if (Raylib.IsKeyPressed(KeyboardKey.M)) bigMap = !bigMap;
+        if (Raylib.IsKeyPressed(KeyboardKey.M))
+        {
+            if (onMoon) game.AddLog("月面では日本地図を開けません（宇宙船で高度 5,000m へ上昇すると地球へ帰還できます）。");
+            else bigMap = !bigMap;
+        }
         if (Raylib.IsKeyPressed(KeyboardKey.LeftBracket) || Raylib.IsKeyPressed(KeyboardKey.Comma)) CycleMiniMapZoom(-1);
         if (Raylib.IsKeyPressed(KeyboardKey.RightBracket) || Raylib.IsKeyPressed(KeyboardKey.Period)) CycleMiniMapZoom(1);
         if (Raylib.IsKeyPressed(KeyboardKey.Escape))
@@ -788,7 +820,21 @@ public sealed partial class App
         }
         if (Raylib.IsKeyPressed(KeyboardKey.N))
         {
-            if (resetConfirm > 0) { SaveNow(); free?.Dispose(); free = null; title = true; titleTime = 0; freeRoam = false; }
+            if (resetConfirm > 0)
+            {
+                SaveNow();
+                free?.Dispose();
+                free = null;
+                moon = null;
+                onMoon = false;
+                fadeDir = 0;
+                fade = 0;
+                fadeAction = null;
+                resetConfirm = 0;
+                title = true;
+                titleTime = 0;
+                freeRoam = false;
+            }
             else
             {
                 resetConfirm = 2.5f;
@@ -1114,6 +1160,11 @@ public sealed partial class App
 
     private void DrawFreeWorld3D()
     {
+        if (onMoon && moon != null)
+        {
+            DrawMoonWorld3D();
+            return;
+        }
         var f = free!;
         f.Draw(camera.Position, time);
         if (IsFlyer(playerKind))
@@ -1138,8 +1189,8 @@ public sealed partial class App
         if (altitude < 400)
         {
             var g = f.R(f.PX, groundLevel + 0.08f, f.PZ);
-            float hw = playerKind is VehicleKind.Airplane or VehicleKind.Fighter ? 5f : 1.6f;
-            float hl = playerKind == VehicleKind.Fighter ? 5.2f : playerKind == VehicleKind.Airplane ? 4f : 4.5f;
+            float hw = playerKind == VehicleKind.Spaceship ? 5.6f : playerKind is VehicleKind.Airplane or VehicleKind.Fighter ? 5f : 1.6f;
+            float hl = playerKind == VehicleKind.Spaceship ? 6.2f : playerKind == VehicleKind.Fighter ? 5.2f : playerKind == VehicleKind.Airplane ? 4f : 4.5f;
             float hr = heading * MathF.PI / 180;
             var fw = new Vector3(-MathF.Sin(hr), 0, MathF.Cos(hr));
             var sd = new Vector3(fw.Z, 0, -fw.X);
@@ -1188,6 +1239,11 @@ public sealed partial class App
 
     private void DrawFreeHud()
     {
+        if (onMoon && moon != null)
+        {
+            DrawMoonHud();
+            return;
+        }
         var f = free!;
         int sw = Raylib.GetScreenWidth(), sh = Raylib.GetScreenHeight();
         float u = Ui;
@@ -1334,15 +1390,17 @@ public sealed partial class App
         DrawLog(16 * u, sh - 150 * u, u);
         DrawCrosshair(u);
 
-        string help = playerKind == VehicleKind.Helicopter
-            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降　マウス・Z/X 照準　左クリック・Ctrl長押し 機関銃　1-8/V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点"
+        string help = playerKind == VehicleKind.Spaceship
+            ? "↑↓ 推進/減速　←→ 旋回　Space 垂直上昇（高度3万m突破で月へ！）　Shift 下降　1-9/V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点"
+            : playerKind == VehicleKind.Helicopter
+            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降　マウス・Z/X 照準　左クリック・Ctrl長押し 機関銃　1-9/V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点"
             : playerKind == VehicleKind.Fighter
-            ? "↑↓ 加速/減速　←→ 旋回　Space 上昇（150km/h〜）　Shift 下降　左クリック・Ctrl 爆弾投下　1-8/V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点"
+            ? "↑↓ 加速/減速　←→ 旋回　Space 上昇（150km/h〜）　Shift 下降　左クリック・Ctrl 爆弾投下　1-9/V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点"
             : IsFlyer(playerKind)
-            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降（140km/h 以上で離陸）　1-8/V 乗り物　M 地図・ワープ　F4 速度上限　B スタンプ帳　C 視点"
+            ? "↑↓ 速度　←→ 旋回　Space 上昇　Shift 下降（140km/h 以上で離陸）　1-9/V 乗り物　M 地図・ワープ　F4 速度上限　B スタンプ帳　C 視点"
             : playerKind == VehicleKind.Tank
-            ? "↑↓ 前進/後退　←→ ハンドル　H AT/MT切替(Q/E・Shift・ホイール ギア)　マウス・Z/X 砲塔　左クリック・Ctrl 発射　1-8/V 乗り物　M 地図　F4 速度上限"
-            : "↑↓ アクセル/ブレーキ　←→ ハンドル　Space ドリフト　H AT/MT切替（E/Shift シフトUP・Q/Ctrl シフトDOWN）　1-8/V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点";
+            ? "↑↓ 前進/後退　←→ ハンドル　H AT/MT切替(Q/E・Shift・ホイール ギア)　マウス・Z/X 砲塔　左クリック・Ctrl 発射　1-9/V 乗り物　M 地図　F4 速度上限"
+            : "↑↓ アクセル/ブレーキ　←→ ハンドル　Space ドリフト　H AT/MT切替（E/Shift シフトUP・Q/Ctrl シフトDOWN）　1-9/V 乗り物　M 地図　F4 速度上限　B スタンプ帳　C 視点";
         var hm = Measure(help, 13);
         Text(help, (sw - hm.X) / 2, sh - 24 * u, 13, new Color(255, 255, 255, 170));
 

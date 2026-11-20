@@ -39,7 +39,7 @@ public sealed partial class App
     private static readonly VehicleKind[] PlayerKinds =
     {
         VehicleKind.Sports, VehicleKind.Tank, VehicleKind.Amphibious, VehicleKind.Horse, VehicleKind.Hikyaku,
-        VehicleKind.Helicopter, VehicleKind.Airplane, VehicleKind.Fighter,
+        VehicleKind.Helicopter, VehicleKind.Airplane, VehicleKind.Fighter, VehicleKind.Spaceship,
     };
 
     private VehicleKind playerKind = VehicleKind.Sports;
@@ -64,6 +64,7 @@ public sealed partial class App
         VehicleKind.Helicopter => "ヘリコプター",
         VehicleKind.Airplane => "飛行機",
         VehicleKind.Fighter => "戦闘機",
+        VehicleKind.Spaceship => "宇宙船",
         _ => "スポーツカー",
     };
 
@@ -75,6 +76,7 @@ public sealed partial class App
         VehicleKind.Helicopter => Rgb(230, 175, 35),
         VehicleKind.Airplane => Rgb(200, 40, 45),
         VehicleKind.Fighter => Rgb(88, 104, 126),
+        VehicleKind.Spaceship => Rgb(236, 240, 248),
         _ => Rgb(200, 25, 35),
     };
 
@@ -86,6 +88,7 @@ public sealed partial class App
         VehicleKind.Horse => 0.5f,
         VehicleKind.Hikyaku => 0.35f,
         VehicleKind.Helicopter or VehicleKind.Airplane or VehicleKind.Fighter => 1.5f,
+        VehicleKind.Spaceship => 2.1f,
         _ => 0.9f,
     };
 
@@ -138,6 +141,13 @@ public sealed partial class App
             turretYaw = turretTarget = 0;
             altitude = 0;
             pitch = bank = 0;
+            if (freeRoam && onMoon && moon != null && !IsFlyer(next))
+            {
+                freeY = moon.SurfaceY(moon.PX, moon.PZ);
+                groundLevel = freeY;
+                carAir = false;
+                carVy = 0;
+            }
             Audio.Play(next == VehicleKind.Horse ? Audio.Neigh : Audio.Whoosh, 0.8f);
             SaveNow();
             ApplyVehicle();
@@ -150,6 +160,7 @@ public sealed partial class App
                 VehicleKind.Helicopter => "（Space 上昇・Shift 下降、左クリック・Ctrl 長押しで機関銃連射！）",
                 VehicleKind.Airplane => "（↑で加速し、140km/h 以上で Space を押すと離陸。遅すぎると失速します）",
                 VehicleKind.Fighter => "（超音速ジェット！ 150km/h 以上で Space 離陸、左クリック・Ctrl で爆弾投下！）",
+                VehicleKind.Spaceship => "（Space で垂直上昇・高度3万m突破で月へ行けます！）",
                 _ => "",
             };
             string limitHint = freeRoam && freeSpeedLimit ? $" [上限 {FreeSpeedCapKmh(next, false):0} km/h]" : "";

@@ -12,7 +12,11 @@ public sealed class SaveData
     public string Vehicle { get; set; } = nameof(VehicleKind.Sports);
     public bool Bgm { get; set; } = true;
     public bool Sfx { get; set; } = true;
+    public float MasterVolume { get; set; } = 1f;
+    public float BgmVolume { get; set; } = 1f;
+    public float SfxVolume { get; set; } = 1f;
     public bool FreeSpeedLimit { get; set; }
+    public bool ManualTransmission { get; set; }
 
     // 日本一周モードの記録
     public int TourClears { get; set; }

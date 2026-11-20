@@ -15,6 +15,9 @@ public static unsafe class Audio
     public static bool Ready { get; private set; }
     public static bool BgmOn { get; set; } = true;
     public static bool SfxOn { get; set; } = true;
+    public static float MasterVolume { get; set; } = 1f;
+    public static float BgmVolume { get; set; } = 1f;
+    public static float SfxVolume { get; set; } = 1f;
 
     public static Sound Cannon, MachineGun, BombDrop, Explosion, Splash, Stamp, Crash, Thud, Beep, Etc, Neigh, Siren, Fanfare, Whoosh, Select, Shift;
     private static Sound[] bgm = Array.Empty<Sound>();
@@ -58,8 +61,10 @@ public static unsafe class Audio
 
     public static void Play(Sound s, float volume = 1, float pitch = 1)
     {
-        if (!Ready || !SfxOn || volume <= 0.01f) return;
-        Raylib.SetSoundVolume(s, Math.Clamp(volume, 0, 1));
+        if (!Ready || !SfxOn) return;
+        float eff = volume * Math.Clamp(SfxVolume, 0f, 1f) * Math.Clamp(MasterVolume, 0f, 1f);
+        if (eff <= 0.005f) return;
+        Raylib.SetSoundVolume(s, Math.Clamp(eff, 0, 1));
         Raylib.SetSoundPitch(s, pitch);
         Raylib.PlaySound(s);
     }
@@ -357,10 +362,12 @@ public static unsafe class Audio
             if (bgmTrack >= 0) Raylib.StopSound(bgm[bgmTrack]);
             bgmTrack = track;
         }
-        if (bgmTrack >= 0 && !Raylib.IsSoundPlaying(bgm[bgmTrack]))
+        if (bgmTrack >= 0)
         {
-            Raylib.SetSoundVolume(bgm[bgmTrack], 0.32f);
-            Raylib.PlaySound(bgm[bgmTrack]);
+            float eff = 0.32f * Math.Clamp(BgmVolume, 0f, 1f) * Math.Clamp(MasterVolume, 0f, 1f);
+            Raylib.SetSoundVolume(bgm[bgmTrack], eff);
+            if (!Raylib.IsSoundPlaying(bgm[bgmTrack]))
+                Raylib.PlaySound(bgm[bgmTrack]);
         }
     }
 
@@ -386,7 +393,7 @@ public static unsafe class Audio
     private static void Fill()
     {
         const float Tau = MathF.PI * 2;
-        float target = Active && SfxOn ? 1 : 0;
+        float target = Active && SfxOn ? Math.Clamp(SfxVolume, 0f, 1f) * Math.Clamp(MasterVolume, 0f, 1f) : 0;
         float kmh = Math.Abs(Kmh);
         for (int i = 0; i < Chunk; i++)
         {
@@ -447,6 +454,19 @@ public static unsafe class Audio
                     lp2 += (lp1 - lp2) * 0.025f;
                     float roar = (lp1 * 0.7f + lp2 * 1.4f) * (0.45f + Throttle * 0.55f + Math.Min(0.5f, kmh / 1200f));
                     x += whine + roar;
+                    break;
+                }
+                case VehicleKind.Spaceship:
+                {
+                    // ロケット噴射の重低音＋プラズマ推進の澄んだハム音
+                    float fHum = 180 + Math.Min(kmh, 1800) * 0.22f + Throttle * 140;
+                    ph1 = (ph1 + fHum / Rate) % 1;
+                    ph2 = (ph2 + fHum * 2.0f / Rate) % 1;
+                    float hum = (MathF.Sin(Tau * (float)ph1) * 0.12f + MathF.Sin(Tau * (float)ph2) * 0.05f);
+                    lp1 += (Noise() - lp1) * (0.05f + Throttle * 0.06f);
+                    lp2 += (lp1 - lp2) * 0.018f;
+                    float thrust = (lp1 * 0.55f + lp2 * 1.85f) * (0.35f + Throttle * 0.65f + Math.Min(0.45f, kmh / 1400f));
+                    x += hum + thrust;
                     break;
                 }
                 default:

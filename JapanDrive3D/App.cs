@@ -64,6 +64,7 @@ public sealed partial class App
     private bool demoFire, demoDive;
     private bool demoSpeedLimitSet;
     private bool demoHeadingSet;
+    private bool demoMoon;
 
     public static void Main(string[] args)
     {
@@ -90,7 +91,7 @@ public sealed partial class App
                         "tank" => VehicleKind.Tank, "amph" => VehicleKind.Amphibious,
                         "horse" => VehicleKind.Horse, "hikyaku" => VehicleKind.Hikyaku,
                         "heli" => VehicleKind.Helicopter, "plane" => VehicleKind.Airplane,
-                        "fighter" => VehicleKind.Fighter, _ => VehicleKind.Sports,
+                        "fighter" => VehicleKind.Fighter, "spaceship" => VehicleKind.Spaceship, _ => VehicleKind.Sports,
                     };
                     break;
                 case "--at" when i + 1 < args.Length: app.demoAt = args[++i]; break;
@@ -114,6 +115,8 @@ public sealed partial class App
                 case "--drift": app.demoDrift = true; break;
                 case "--speed-limit": app.freeSpeedLimit = true; app.demoSpeedLimitSet = true; break;
                 case "--no-speed-limit": app.freeSpeedLimit = false; app.demoSpeedLimitSet = true; break;
+                case "--moon": app.demoMoon = true; break;
+                case "--settings": app.demoSettings = true; stayOnTitle = true; break;
             }
         }
         if (app.shotFile != null && !stayOnTitle) app.pendingStart = app.demoTour ? GameMode.Tour : GameMode.Free;
@@ -153,6 +156,7 @@ public sealed partial class App
             Projection = CameraProjection.Perspective,
         };
         if (pendingStart is GameMode m) StartGame(m);
+        if (demoSettings) titleSettings = true;
 
         while (!Raylib.WindowShouldClose())
         {
@@ -206,6 +210,8 @@ public sealed partial class App
         scene.PlayerS = 0;
         traffic.Reset(0);
         bigMap = stampBook = false;
+        titleSettings = false;
+        draggingSlider = -1;
         detour = null;
         pendingDetour = null;
         title = false;
@@ -258,6 +264,7 @@ public sealed partial class App
         }
 
         HandleKeys();
+        if (title) return;
         NotifyUpdateInGame();
         UpdateFade(dt);
         popupTime += dt;
@@ -388,19 +395,27 @@ public sealed partial class App
 
     private void UpdateTitle(float dt)
     {
-        HandleUpdateKeys();
         titleTime += dt;
         playerS += 22 * dt;
         scene.PlayerS = playerS;
         traffic.Update(dt, playerS, playerU, 22);
+        if (titleSettings)
+        {
+            UpdateTitleSettings();
+            UpdateCamera(dt);
+            return;
+        }
+        HandleUpdateKeys();
         if (Raylib.IsKeyPressed(KeyboardKey.One) || Raylib.IsKeyPressed(KeyboardKey.Kp1)) StartGame(GameMode.Tour);
         else if (Raylib.IsKeyPressed(KeyboardKey.Two) || Raylib.IsKeyPressed(KeyboardKey.Kp2)) StartGame(GameMode.Free);
+        else if (Raylib.IsKeyPressed(KeyboardKey.S)) OpenTitleSettings();
         else if (Raylib.IsMouseButtonPressed(MouseButton.Left))
         {
             int sw = Raylib.GetScreenWidth(), sh = Raylib.GetScreenHeight();
             float u = Draw.Ui;
             var mouse = Raylib.GetMousePosition();
-            if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(0, sw, sh, u))) StartGame(GameMode.Tour);
+            if (Raylib.CheckCollisionPointRec(mouse, TitleSettingsButtonRect(sw, u))) OpenTitleSettings();
+            else if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(0, sw, sh, u))) StartGame(GameMode.Tour);
             else if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(1, sw, sh, u))) StartGame(GameMode.Free);
             else
             {
@@ -582,7 +597,7 @@ public sealed partial class App
             }
             else
             {
-                float back = playerKind == VehicleKind.Fighter ? 22 : playerKind == VehicleKind.Airplane ? 20 : 17;
+                float back = playerKind == VehicleKind.Spaceship ? 25 : playerKind == VehicleKind.Fighter ? 22 : playerKind == VehicleKind.Airplane ? 20 : 17;
                 pos = car - dir * back + new Vector3(0, 5.5f, 0);
                 // 高く飛ぶほど下の景色を見下ろす
                 float down = Math.Min(22, altitude / 150f);
@@ -632,7 +647,7 @@ public sealed partial class App
             target += j;
         }
         if (freeRoam && free != null && !IsFlyer(playerKind))
-            pos.Y = Math.Max(pos.Y, FreeWorld.WaterY + 0.35f);
+            pos.Y = Math.Max(pos.Y, onMoon ? groundLevel + 0.35f : FreeWorld.WaterY + 0.35f);
         camera.Position = pos;
         camera.Target = target;
     }
@@ -785,15 +800,48 @@ public sealed partial class App
 
     // ================= 描画 =================
 
+    private static Color LerpColor(Color a, Color b, float t) => new(
+        (byte)(a.R + (b.R - a.R) * t),
+        (byte)(a.G + (b.G - a.G) * t),
+        (byte)(a.B + (b.B - a.B) * t),
+        (byte)255);
+
     private void Render()
     {
         Raylib.BeginDrawing();
         scene.SetTime(title ? 9 * 60 : game.GameMinutes);
-        Raylib.ClearBackground(scene.Horizon);
         int w = Raylib.GetScreenWidth(), h = Raylib.GetScreenHeight();
-        Raylib.DrawRectangleGradientV(0, 0, w, (int)(h * 0.55f), scene.SkyTop, scene.Horizon);
+        if (freeRoam && !title && onMoon)
+        {
+            Raylib.ClearBackground(Draw.Rgb(3, 5, 11));
+        }
+        else
+        {
+            Color skyTop = scene.SkyTop, horizon = scene.Horizon;
+            float spaceT = freeRoam && !title ? Math.Clamp((freeY - 3000f) / 22000f, 0f, 1f) : 0f;
+            if (spaceT > 0f)
+            {
+                skyTop = LerpColor(skyTop, Draw.Rgb(3, 5, 12), spaceT);
+                horizon = LerpColor(horizon, Draw.Rgb(10, 22, 52), spaceT * 0.92f);
+            }
+            Raylib.ClearBackground(horizon);
+            Raylib.DrawRectangleGradientV(0, 0, w, (int)(h * 0.55f), skyTop, horizon);
+            if (spaceT > 0.25f)
+            {
+                // 高高度（成層圏〜宇宙付近）では星が見え始める
+                byte sa = (byte)Math.Clamp((spaceT - 0.25f) / 0.75f * 230f, 0f, 230f);
+                for (int si = 0; si < 90; si++)
+                {
+                    int sx = (int)((si * 9973 + 137) % Math.Max(1, w));
+                    int sy = (int)((si * 4999 + 71) % Math.Max(1, (int)(h * 0.52f)));
+                    Raylib.DrawRectangle(sx, sy, (si & 3) == 0 ? 2 : 1, (si & 3) == 0 ? 2 : 1, new Color((byte)235, (byte)242, (byte)255, sa));
+                }
+            }
+        }
 
-        if (freeRoam && !title && free != null)
+        if (freeRoam && !title && onMoon)
+            Rlgl.SetClipPlanes(Math.Min(2.0, 0.3 + altitude * 0.01), 4500);
+        else if (freeRoam && !title && free != null)
             Rlgl.SetClipPlanes(Math.Min(2.0, 0.3 + altitude * 0.01), Math.Max(2500, free.ViewRadius * 1.6 + 3000 + altitude * 1.5));
         else
         {

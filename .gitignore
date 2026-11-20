@@ -9,3 +9,6 @@ obj/
 .vscode/
 *.user
 .claude/
+
+# 確認用スクリーンショット
+shot_*.png

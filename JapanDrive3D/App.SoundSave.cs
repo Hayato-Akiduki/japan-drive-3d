@@ -23,7 +23,11 @@ public sealed partial class App
         if (Enum.TryParse(save.Vehicle, out VehicleKind kind) && Array.IndexOf(PlayerKinds, kind) >= 0) playerKind = kind;
         Audio.BgmOn = save.Bgm;
         Audio.SfxOn = save.Sfx;
+        Audio.MasterVolume = Math.Clamp(save.MasterVolume, 0f, 1f);
+        Audio.BgmVolume = Math.Clamp(save.BgmVolume, 0f, 1f);
+        Audio.SfxVolume = Math.Clamp(save.SfxVolume, 0f, 1f);
         if (!demoSpeedLimitSet) freeSpeedLimit = save.FreeSpeedLimit;
+        if (!demoMt) manualTransmission = save.ManualTransmission;
     }
 
     private void SaveNow()
@@ -34,12 +38,16 @@ public sealed partial class App
         save.Vehicle = playerKind.ToString();
         save.Bgm = Audio.BgmOn;
         save.Sfx = Audio.SfxOn;
+        save.MasterVolume = Audio.MasterVolume;
+        save.BgmVolume = Audio.BgmVolume;
+        save.SfxVolume = Audio.SfxVolume;
         save.FreeSpeedLimit = freeSpeedLimit;
+        save.ManualTransmission = manualTransmission;
         if (freeRoam && free != null && !title)
         {
             save.FreeX = free.PX;
             save.FreeZ = free.PZ;
-            save.FreeHeading = heading;
+            save.FreeHeading = onMoon ? earthHeading : heading;
         }
         save.Save();
         saveTimer = 0;

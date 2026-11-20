@@ -35,17 +35,19 @@ public static class Aircraft
     {
         VehicleKind.Airplane => 7.5f,
         VehicleKind.Fighter => 11.2f,
+        VehicleKind.Spaceship => 13.0f,
         _ => 9f,
     };
 
     /// <param name="rotor">ローター・プロペラの回転角（度）</param>
-    /// <param name="gearDown">脚を出しているか（飛行機・戦闘機）</param>
+    /// <param name="gearDown">脚を出しているか（飛行機・戦闘機・宇宙船）</param>
     public static void Draw(Scene sc, VehicleKind kind, Color body, float distance, float rotor, bool gearDown)
     {
         scene = sc;
         dist = distance;
         if (kind == VehicleKind.Helicopter) Helicopter(body, rotor);
         else if (kind == VehicleKind.Fighter) Fighter(body, rotor, gearDown);
+        else if (kind == VehicleKind.Spaceship) Spaceship(body, rotor, gearDown);
         else Airplane(body, rotor, gearDown);
     }
 
@@ -211,6 +213,75 @@ public static class Aircraft
             {
                 Box(sx, 0.75f, -0.9f, 0.10f, 1.0f, 0.10f, Dark);
                 Raylib.DrawCylinderEx(new Vector3(sx - 0.1f, 0.28f, -0.9f), new Vector3(sx + 0.1f, 0.28f, -0.9f), 0.28f, 0.28f, 12, C(Dark));
+            }
+        }
+    }
+
+    private static void Spaceship(Color body, float rotor, bool gearDown)
+    {
+        var tileDark = Rgb(28, 32, 38);
+        var accent = Rgb(35, 115, 220);
+        var gold = Rgb(230, 185, 65);
+        var red = Rgb(210, 45, 45);
+        var canopy = Rgb(70, 160, 235);
+
+        // メイン船体（スペースシャトル風の白い流線型＋黒い耐熱タイル底面）
+        Ellipsoid(0, 1.85f, 0.4f, 1.35f, 1.05f, 5.2f, body);
+        Box(0, 1.12f, -0.2f, 2.2f, 0.28f, 8.2f, tileDark);
+        Raylib.DrawCylinderEx(new Vector3(0, 1.65f, 4.2f), new Vector3(0, 1.55f, 6.2f), 0.85f, 0.22f, 12, C(body));
+        Raylib.DrawSphereEx(new Vector3(0, 1.55f, 6.25f), 0.24f, 8, 8, C(tileDark)); // ノーズコーン耐熱先端
+
+        // コックピット窓とペイロードベイライン
+        Ellipsoid(0, 2.42f, 2.75f, 0.86f, 0.52f, 1.35f, canopy);
+        Box(0, 2.86f, -0.8f, 0.12f, 0.06f, 5.2f, GunMetal);
+        Box(0, 2.15f, -0.6f, 2.74f, 0.16f, 4.4f, accent);
+
+        // 大きなデルタ主翼（前縁に黒い耐熱パネル＋日の丸マーク）
+        Box(0, 1.32f, -1.0f, 5.4f, 0.18f, 4.2f, body);
+        Box(0, 1.30f, -2.0f, 8.8f, 0.15f, 2.8f, body);
+        Box(0, 1.28f, -2.75f, 11.4f, 0.13f, 1.6f, body);
+        Box(0, 1.18f, -1.9f, 10.6f, 0.08f, 2.9f, tileDark);
+        foreach (float sx in new[] { -1f, 1f })
+        {
+            Box(sx * 5.6f, 1.55f, -2.85f, 0.16f, 0.65f, 1.5f, accent); // ウイングレット
+            Raylib.DrawCylinder(new Vector3(sx * 3.3f, 1.41f, -2.1f), 0.55f, 0.55f, 0.03f, 12, C(White));
+            Raylib.DrawCylinder(new Vector3(sx * 3.3f, 1.43f, -2.1f), 0.36f, 0.36f, 0.03f, 12, C(red));
+        }
+
+        // 垂直尾翼
+        Box(0, 3.25f, -3.55f, 0.22f, 2.3f, 2.2f, body);
+        Box(0, 4.05f, -3.75f, 0.25f, 0.45f, 1.7f, accent);
+
+        // 3連ロケットノズルと青いプラズマ噴射炎
+        float pulse = 0.85f + 0.28f * MathF.Sin(rotor * 0.32f);
+        (float nx, float ny)[] nozzles = { (0f, 2.15f), (-0.75f, 1.45f), (0.75f, 1.45f) };
+        foreach (var (nx, ny) in nozzles)
+        {
+            Raylib.DrawCylinderEx(new Vector3(nx, ny, -4.4f), new Vector3(nx, ny, -5.35f), 0.36f, 0.52f, 12, C(Dark));
+            Raylib.DrawCylinderEx(new Vector3(nx, ny, -5.30f), new Vector3(nx, ny, -5.30f - 2.3f * pulse),
+                0.42f, 0.04f, 10, C(Rgb(105, 195, 255), lit: true));
+            Raylib.DrawCylinderEx(new Vector3(nx, ny, -5.30f), new Vector3(nx, ny, -5.30f - 1.25f * pulse),
+                0.24f, 0.05f, 8, C(Rgb(245, 250, 255), lit: true));
+        }
+
+        // 下部VTOLスラスター（垂直離着陸用）
+        if (!gearDown || pulse > 0.9f)
+        {
+            foreach (float sx in new[] { -1.1f, 1.1f })
+            {
+                Raylib.DrawCylinderEx(new Vector3(sx, 1.05f, -0.4f), new Vector3(sx, 1.05f - 0.65f * pulse, -0.4f),
+                    0.22f, 0.04f, 8, C(Rgb(130, 210, 255), lit: true));
+            }
+        }
+
+        // 着陸脚（地上・月面着陸時）
+        if (gearDown)
+        {
+            (float lx, float lz)[] legs = { (0f, 3.6f), (-2.2f, -1.8f), (2.2f, -1.8f) };
+            foreach (var (lx, lz) in legs)
+            {
+                Raylib.DrawCylinderEx(new Vector3(lx * 0.85f, 1.15f, lz), new Vector3(lx, 0.14f, lz), 0.09f, 0.09f, 8, C(gold));
+                Raylib.DrawCylinder(new Vector3(lx, 0.04f, lz), 0.42f, 0.48f, 0.12f, 10, C(Dark));
             }
         }
     }
