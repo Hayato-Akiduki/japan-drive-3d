@@ -4,15 +4,15 @@ using static JapanDrive.Draw;
 
 namespace JapanDrive;
 
-/// <summary>タイトル画面の設定アイコンと設定画面（音量調整など）。</summary>
+/// <summary>タイトル・走行画面共通の設定アイコンと設定画面（音量調整など）。</summary>
 public sealed partial class App
 {
-    private bool titleSettings;
+    private bool settingsOpen;
     private int draggingSlider = -1; // 0: マスター, 1: BGM, 2: 効果音
     private bool demoSettings;
 
-    private static Rectangle TitleSettingsButtonRect(int sw, float u) =>
-        new(sw - 118 * u, 18 * u, 100 * u, 42 * u);
+    private Rectangle SettingsButtonRect(int sw, float u) =>
+        new(title ? sw - 118 * u : sw / 2f - 50 * u, (title ? 18 : 68) * u, 100 * u, 42 * u);
 
     private static Rectangle SettingsPanelRect(int sw, int sh, float u)
     {
@@ -51,26 +51,26 @@ public sealed partial class App
     private static Rectangle SettingsCloseButtonRect(Rectangle p, float u) =>
         new(p.X + p.Width - 178 * u, p.Y + p.Height - 58 * u, 150 * u, 38 * u);
 
-    private void OpenTitleSettings()
+    private void OpenSettings()
     {
-        titleSettings = true;
+        settingsOpen = true;
         draggingSlider = -1;
         Audio.Play(Audio.Select, 0.8f);
     }
 
-    private void CloseTitleSettings()
+    private void CloseSettings()
     {
-        titleSettings = false;
+        settingsOpen = false;
         draggingSlider = -1;
         Audio.Play(Audio.Select, 0.7f);
         SaveNow();
     }
 
-    private void UpdateTitleSettings()
+    private void UpdateSettings()
     {
-        if (Raylib.IsKeyPressed(KeyboardKey.Escape))
+        if (Raylib.IsKeyPressed(KeyboardKey.Escape) || Raylib.IsKeyPressed(KeyboardKey.F1))
         {
-            CloseTitleSettings();
+            CloseSettings();
             return;
         }
 
@@ -85,7 +85,7 @@ public sealed partial class App
                 Raylib.CheckCollisionPointRec(mouse, SettingsCloseButtonRect(panel, u)) ||
                 !Raylib.CheckCollisionPointRec(mouse, panel))
             {
-                CloseTitleSettings();
+                CloseSettings();
                 return;
             }
 
@@ -125,6 +125,8 @@ public sealed partial class App
             if (Raylib.CheckCollisionPointRec(mouse, SettingsTransmissionRect(panel, u)))
             {
                 manualTransmission = !manualTransmission;
+                if (!title && manualTransmission) manualGear = AutoGearForKmh(CurrentKmh);
+                revLimiting = false;
                 Audio.Play(Audio.Select, 0.8f);
                 SaveNow();
                 return;
@@ -140,6 +142,7 @@ public sealed partial class App
                 Audio.SfxOn = true;
                 freeSpeedLimit = false;
                 manualTransmission = false;
+                revLimiting = false;
                 Audio.Play(Audio.Select, 0.9f);
                 SaveNow();
                 return;
@@ -174,11 +177,19 @@ public sealed partial class App
         }
     }
 
-    /// <summary>タイトル画面右上の歯車アイコンボタン。</summary>
-    private void DrawTitleSettingsButton(int sw, float u, Vector2 mouse)
+    private void DrawInGameSettings()
     {
-        var r = TitleSettingsButtonRect(sw, u);
-        bool hover = !titleSettings && Raylib.CheckCollisionPointRec(mouse, r);
+        int sw = Raylib.GetScreenWidth(), sh = Raylib.GetScreenHeight();
+        var mouse = Raylib.GetMousePosition();
+        if (!bigMap && !stampBook && fadeDir == 0) DrawSettingsButton(sw, Ui, mouse);
+        if (settingsOpen) DrawSettings(sw, sh, Ui, mouse);
+    }
+
+    /// <summary>歯車アイコンの設定ボタン（走行中は上部中央）。</summary>
+    private void DrawSettingsButton(int sw, float u, Vector2 mouse)
+    {
+        var r = SettingsButtonRect(sw, u);
+        bool hover = !settingsOpen && Raylib.CheckCollisionPointRec(mouse, r);
         Color bg = hover ? new Color(34, 56, 88, 240) : new Color(15, 25, 40, 215);
         Panel(r.X, r.Y, r.Width, r.Height, bg);
         if (hover) Raylib.DrawRectangleRoundedLinesEx(r, 0.25f, 6, 1.8f * u, Orange);
@@ -206,7 +217,7 @@ public sealed partial class App
         Raylib.DrawCircleV(c, r * 0.36f, hole);
     }
 
-    private void DrawTitleSettings(int sw, int sh, float u, Vector2 mouse)
+    private void DrawSettings(int sw, int sh, float u, Vector2 mouse)
     {
         Raylib.DrawRectangle(0, 0, sw, sh, new Color(8, 12, 22, 200));
 
@@ -219,6 +230,7 @@ public sealed partial class App
         DrawGearIcon(new Vector2(p.X + 38 * u, p.Y + 34 * u), 12f * u, Orange, panelBg);
         Text("設定", p.X + 60 * u, p.Y + 19 * u, 28, Color.White);
 
+        Text(title ? "変更は自動保存されます" : "一時停止中・変更は自動保存されます", p.X + 146 * u, p.Y + 30 * u, 14, Sub);
         var closeIcon = SettingsCloseIconRect(p, u);
         bool closeHover = Raylib.CheckCollisionPointRec(mouse, closeIcon);
         Panel(closeIcon.X, closeIcon.Y, closeIcon.Width, closeIcon.Height,
@@ -293,8 +305,8 @@ public sealed partial class App
         DrawSettingsOptionButton(SettingsSpeedLimitRect(p, u), freeSpeedLimit ? "ON（リアル）" : "OFF（無制限）", freeSpeedLimit, mouse, u);
 
         // 初期シフトモード
-        Text("初期シフトモード", p.X + 28 * u, p.Y + 402 * u, 17, Color.White);
-        Text("走行開始時のギア操作（走行中は H キーで切替可）", p.X + 28 * u, p.Y + 426 * u, 12, Sub);
+        Text(title ? "初期シフトモード" : "シフトモード", p.X + 28 * u, p.Y + 402 * u, 17, Color.White);
+        Text("ギア操作を選択（走行中は H キーでも切替可）", p.X + 28 * u, p.Y + 426 * u, 12, Sub);
         DrawSettingsOptionButton(SettingsTransmissionRect(p, u), manualTransmission ? "6速 MT" : "AT（自動）", manualTransmission, mouse, u);
 
         // ---- フッターボタン ----

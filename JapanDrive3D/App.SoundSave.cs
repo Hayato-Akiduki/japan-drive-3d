@@ -110,7 +110,7 @@ public sealed partial class App
     /// <summary>毎フレーム：エンジン音・足音・BGM・ゲーム中の出来事の音・自動セーブ。</summary>
     private void UpdateSound(float dt)
     {
-        bool driving = !title && !bigMap && !stampBook && fade < 0.9f;
+        bool driving = !settingsOpen && !title && !bigMap && !stampBook && fade < 0.9f;
         Audio.Active = driving;
         Audio.Kind = playerKind;
         Audio.Kmh = game.OnFerry ? 0 : CurrentKmh;

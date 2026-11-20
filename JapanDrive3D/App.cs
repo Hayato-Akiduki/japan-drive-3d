@@ -117,6 +117,7 @@ public sealed partial class App
                 case "--no-speed-limit": app.freeSpeedLimit = false; app.demoSpeedLimitSet = true; break;
                 case "--moon": app.demoMoon = true; break;
                 case "--settings": app.demoSettings = true; stayOnTitle = true; break;
+                case "--drive-settings": app.demoSettings = true; break;
             }
         }
         if (app.shotFile != null && !stayOnTitle) app.pendingStart = app.demoTour ? GameMode.Tour : GameMode.Free;
@@ -156,7 +157,7 @@ public sealed partial class App
             Projection = CameraProjection.Perspective,
         };
         if (pendingStart is GameMode m) StartGame(m);
-        if (demoSettings) titleSettings = true;
+        if (demoSettings) settingsOpen = true;
 
         while (!Raylib.WindowShouldClose())
         {
@@ -210,7 +211,7 @@ public sealed partial class App
         scene.PlayerS = 0;
         traffic.Reset(0);
         bigMap = stampBook = false;
-        titleSettings = false;
+        settingsOpen = false;
         draggingSlider = -1;
         detour = null;
         pendingDetour = null;
@@ -256,6 +257,19 @@ public sealed partial class App
     private void Update(float dt)
     {
         Draw.Ui = Raylib.GetScreenHeight() / 900f;
+        if (settingsOpen)
+        {
+            UpdateSettings();
+            return; // 設定中は走行・戦闘・画面切替の入力を止める
+        }
+        bool settingsClicked = !title && !bigMap && !stampBook && fadeDir == 0
+            && Raylib.IsMouseButtonPressed(MouseButton.Left)
+            && Raylib.CheckCollisionPointRec(Raylib.GetMousePosition(), SettingsButtonRect(Raylib.GetScreenWidth(), Draw.Ui));
+        if ((Raylib.IsKeyPressed(KeyboardKey.F1) && (title || fadeDir == 0)) || settingsClicked)
+        {
+            OpenSettings();
+            return;
+        }
         HandleAudioKeys();
         if (title)
         {
@@ -399,22 +413,16 @@ public sealed partial class App
         playerS += 22 * dt;
         scene.PlayerS = playerS;
         traffic.Update(dt, playerS, playerU, 22);
-        if (titleSettings)
-        {
-            UpdateTitleSettings();
-            UpdateCamera(dt);
-            return;
-        }
         HandleUpdateKeys();
         if (Raylib.IsKeyPressed(KeyboardKey.One) || Raylib.IsKeyPressed(KeyboardKey.Kp1)) StartGame(GameMode.Tour);
         else if (Raylib.IsKeyPressed(KeyboardKey.Two) || Raylib.IsKeyPressed(KeyboardKey.Kp2)) StartGame(GameMode.Free);
-        else if (Raylib.IsKeyPressed(KeyboardKey.S)) OpenTitleSettings();
+        else if (Raylib.IsKeyPressed(KeyboardKey.S)) OpenSettings();
         else if (Raylib.IsMouseButtonPressed(MouseButton.Left))
         {
             int sw = Raylib.GetScreenWidth(), sh = Raylib.GetScreenHeight();
             float u = Draw.Ui;
             var mouse = Raylib.GetMousePosition();
-            if (Raylib.CheckCollisionPointRec(mouse, TitleSettingsButtonRect(sw, u))) OpenTitleSettings();
+            if (Raylib.CheckCollisionPointRec(mouse, SettingsButtonRect(sw, u))) OpenSettings();
             else if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(0, sw, sh, u))) StartGame(GameMode.Tour);
             else if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(1, sw, sh, u))) StartGame(GameMode.Free);
             else
@@ -854,6 +862,7 @@ public sealed partial class App
             DrawFreeWorld3D();
             Raylib.EndMode3D();
             DrawFreeHud();
+            DrawInGameSettings();
             if (fade > 0) Raylib.DrawRectangle(0, 0, w, h, new Color((byte)0, (byte)0, (byte)0, (byte)(255 * Math.Clamp(fade, 0, 1))));
             Raylib.EndDrawing();
             return;
@@ -881,7 +890,11 @@ public sealed partial class App
         Raylib.EndMode3D();
 
         if (title) DrawTitle();
-        else DrawHud();
+        else
+        {
+            DrawHud();
+            DrawInGameSettings();
+        }
         if (fade > 0) Raylib.DrawRectangle(0, 0, w, h, new Color((byte)0, (byte)0, (byte)0, (byte)(255 * Math.Clamp(fade, 0, 1))));
         Raylib.EndDrawing();
     }

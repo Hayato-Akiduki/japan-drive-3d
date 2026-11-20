@@ -227,7 +227,7 @@ public sealed partial class App
         for (int i = 0; i < 2; i++)
         {
             var r = TitleCardRect(i, sw, sh, u);
-            bool hover = !titleSettings && Raylib.CheckCollisionPointRec(mouse, r);
+            bool hover = !settingsOpen && Raylib.CheckCollisionPointRec(mouse, r);
             Panel(r.X, r.Y, r.Width, r.Height, hover ? new Color(28, 48, 76, 238) : new Color(15, 25, 40, 220));
             if (hover) Raylib.DrawRectangleRoundedLinesEx(r, 0.14f, 6, 2f * u, Orange);
             Raylib.DrawCircleV(new Vector2(r.X + 48 * u, r.Y + r.Height / 2), 26 * u, hover ? Rgb(255, 165, 50) : Orange);
@@ -249,7 +249,7 @@ public sealed partial class App
         for (int ti = 0; ti < toggles.Length; ti++)
         {
             var tr = TitleToggleRect(ti, sw, togglesY, u);
-            bool hover = !titleSettings && Raylib.CheckCollisionPointRec(mouse, tr);
+            bool hover = !settingsOpen && Raylib.CheckCollisionPointRec(mouse, tr);
             var (label, on) = toggles[ti];
             Color bg = hover
                 ? (on ? new Color(45, 95, 145, 235) : new Color(55, 65, 85, 230))
@@ -260,8 +260,8 @@ public sealed partial class App
         }
         TextCentered("（設定・記録は自動でセーブされます）", sw / 2f, togglesY + 34 * u, 12, new Color(255, 255, 255, 165));
         DrawUpdateBanner(sw, sh, u);
-        DrawTitleSettingsButton(sw, u, mouse);
-        if (titleSettings) DrawTitleSettings(sw, sh, u, mouse);
+        DrawSettingsButton(sw, u, mouse);
+        if (settingsOpen) DrawSettings(sw, sh, u, mouse);
     }
 
     /// <summary>3Dの案内標識に文字を重ねる。</summary>
