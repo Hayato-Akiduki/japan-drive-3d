@@ -300,7 +300,7 @@ public sealed partial class App
             groundLevel = surface;
             if (playerKind == VehicleKind.Spaceship && altitude > MoonReturnAlt && fadeDir == 0)
             {
-                BeginFade(ReturnToEarth);
+                BeginSpaceTravel(toMoon: false);
             }
         }
         else

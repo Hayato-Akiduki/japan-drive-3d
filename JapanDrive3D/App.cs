@@ -180,6 +180,7 @@ public sealed partial class App
         }
 
         SaveNow();
+        UnloadSpaceTravelGraphics();
         free?.Dispose();
         free = null;
         Audio.Shutdown();
@@ -284,6 +285,11 @@ public sealed partial class App
     private void Update(float dt)
     {
         Draw.Ui = Raylib.GetScreenHeight() / 900f;
+        if (spaceTravel != null)
+        {
+            UpdateSpaceTravel(dt);
+            return;
+        }
         if (settingsOpen)
         {
             UpdateSettings();
@@ -857,7 +863,17 @@ public sealed partial class App
 
     private void Render()
     {
+        int width = Raylib.GetScreenWidth(), height = Raylib.GetScreenHeight();
+        float travelOpacity = spaceTravel is { } travel ? PrepareSpaceTravelFrame(travel, width, height) : 0;
         Raylib.BeginDrawing();
+        if (travelOpacity < 1) RenderGameplay();
+        else Raylib.ClearBackground(Draw.Rgb(5, 8, 20));
+        if (travelOpacity > 0) DrawSpaceTravelFrame(width, height, travelOpacity);
+        Raylib.EndDrawing();
+    }
+
+    private void RenderGameplay()
+    {
         scene.SetTime(title ? 9 * 60 : game.GameMinutes);
         int w = Raylib.GetScreenWidth(), h = Raylib.GetScreenHeight();
         if (freeRoam && !title && onMoon)
@@ -907,7 +923,6 @@ public sealed partial class App
             DrawInGameSettings();
             DrawSaveStatus(w, h, Draw.Ui);
             if (fade > 0) Raylib.DrawRectangle(0, 0, w, h, new Color((byte)0, (byte)0, (byte)0, (byte)(255 * Math.Clamp(fade, 0, 1))));
-            Raylib.EndDrawing();
             return;
         }
         scene.Draw(camera.Position);
@@ -941,6 +956,5 @@ public sealed partial class App
         }
         DrawSaveStatus(w, h, Draw.Ui);
         if (fade > 0) Raylib.DrawRectangle(0, 0, w, h, new Color((byte)0, (byte)0, (byte)0, (byte)(255 * Math.Clamp(fade, 0, 1))));
-        Raylib.EndDrawing();
     }
 }

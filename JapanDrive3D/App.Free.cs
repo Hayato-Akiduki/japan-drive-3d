@@ -557,7 +557,7 @@ public sealed partial class App
             if (playerKind == VehicleKind.Spaceship)
             {
                 freeY = 30000;
-                if (fadeDir == 0) BeginFade(() => EnterMoon(landed: false));
+                if (fadeDir == 0) BeginSpaceTravel(toMoon: true);
             }
             else
             {
