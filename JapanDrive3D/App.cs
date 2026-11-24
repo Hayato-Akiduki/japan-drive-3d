@@ -312,7 +312,7 @@ public sealed partial class App
 
         bool wasStampBook = stampBook;
         HandleKeys();
-        if (title) return;
+        if (title || spaceTravel != null) return;
         UpdateDrivingHints();
         NotifyUpdateInGame();
         UpdateFade(dt);
@@ -321,7 +321,10 @@ public sealed partial class App
         {
             if (bigMap && !wasStampBook && !stampBook)
             {
-                if (freeRoam) HandleFreeMapMouse();
+                if (freeRoam)
+                {
+                    if (!onMoon) HandleFreeMapMouse();
+                }
                 else if (detour == null) HandleBigMapMouse();
                 else UpdateBigMapCamera(out _, out _);
             }

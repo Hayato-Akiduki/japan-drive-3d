@@ -12,12 +12,16 @@ public sealed partial class App
     private const float MoonGravity = 3.65f;      // 地球(22 m/s^2)の約 1/6G
     private const float MoonReturnAlt = 5000f;    // 月面から宇宙船で地球へ帰還する高度（m）
     private float earthHeading;
+    private float moonReturnConfirmUntil;
+    private bool moonAreaLimit;
 
     private void EnterMoon(bool landed = false)
     {
         earthHeading = heading;
         moon = new MoonWorld();
         onMoon = true;
+        moonReturnConfirmUntil = 0;
+        moonAreaLimit = false;
         bigMap = false;
         stampBook = false;
         shells.Clear();
@@ -56,7 +60,20 @@ public sealed partial class App
             game.AddLog("大気圏を突破し、月（静かの海ベース上空）に到着しました！");
             game.AddLog("Shift で着陸し、V キーで車に乗り換えると月の重力（1/6G）で運転できます！");
         }
+        game.AddLog("M で月面地図。R を2回押すと、どの乗り物でも地球へ帰還できます。");
         moon.Altitude = altitude;
+    }
+
+    private void RequestMoonReturn()
+    {
+        if (fadeDir != 0) return;
+        if (moonReturnConfirmUntil > time)
+        {
+            bigMap = false;
+            BeginSpaceTravel(toMoon: false);
+            return;
+        }
+        moonReturnConfirmUntil = time + 4;
     }
 
     private void ReturnToEarth()
@@ -67,22 +84,41 @@ public sealed partial class App
         effects.Clear();
         isDrifting = false;
         driftYaw = 0f;
-        pitch = bank = 0f;
+        pitch = bank = terrainPitch = terrainBank = climbRate = 0f;
         carAir = false;
         carVy = 0f;
         heading = earthHeading;
+        bool flyer = IsFlyer(playerKind);
         if (free != null)
         {
+            if (!flyer)
+            {
+                bool inWater = !free.OnRoad(free.PX, free.PZ) && free.IsInWater(free.PX, free.PZ);
+                if (inWater)
+                {
+                    var city = MapData.Cities
+                        .Select(FreeWorld.CityPos)
+                        .Where(p => free.IsLand(p.X, p.Z) && !free.IsInWater(p.X, p.Z))
+                        .MinBy(p => Vector2.DistanceSquared(new Vector2((float)p.X, (float)p.Z), new Vector2((float)free.PX, (float)free.PZ)));
+                    (free.PX, free.PZ) = city;
+                }
+                var spawn = free.FindSafeRoadSpawn(free.PX, free.PZ);
+                (free.PX, free.PZ) = (spawn.X, spawn.Z);
+                heading = spawn.Heading;
+                free.Cars.Clear();
+                free.UpdateNear();
+            }
             float surf = free.SurfaceY(free.PX, free.PZ);
-            freeY = surf + 800f;
+            altitude = flyer ? 800f : 0f;
+            freeY = surf + altitude;
             groundLevel = surf;
-            altitude = 800f;
             free.Altitude = altitude;
         }
-        freeKmh = 180f;
-        prevAirborne = true;
+        freeOnWater = false;
+        freeKmh = flyer ? (playerKind == VehicleKind.Helicopter ? 0f : 180f) : 0f;
+        prevAirborne = flyer;
         Audio.Play(Audio.Whoosh, 0.9f);
-        game.AddLog("地球（日本の上空）へ帰還しました！");
+        game.AddLog(flyer ? "地球の上空へ帰還しました！" : "地球に帰還しました。現在の乗り物で出発できます。");
     }
 
     private void UpdateMoon(float dt)
@@ -260,6 +296,8 @@ public sealed partial class App
         // ---- 前進＆基地ドームとの当たり判定 ----
         double nx = m.PX + Math.Sin(hr) * ms * dt;
         double nz = m.PZ + Math.Cos(hr) * ms * dt;
+        moonAreaLimit = MoonWorld.LimitPosition(ref nx, ref nz);
+        if (moonAreaLimit) freeKmh = Math.Clamp(freeKmh, -12, 12);
         crashCooldown -= dt;
         bool move = true;
         if (m.HitObstacle(nx, nz, freeY + 0.8f, PlayerHalfWidth + 0.5f))
@@ -274,7 +312,7 @@ public sealed partial class App
             freeKmh = -freeKmh * 0.25f;
             move = false;
         }
-        if (move && !flyer && !carAir && Math.Abs(ms * dt) > 0.001f)
+        if (move && !moonAreaLimit && !flyer && !carAir && Math.Abs(ms * dt) > 0.001f)
         {
             float nh = m.SurfaceY(nx, nz);
             float slope = (nh - surface) / (float)Math.Abs(ms * dt);
@@ -486,17 +524,18 @@ public sealed partial class App
         double baseDist = Math.Sqrt(m.PX * m.PX + m.PZ * m.PZ);
         Text($"静かの海ベースから {baseDist:N0} m　向き：{Compass(heading)}", x, y, 15, Rgb(210, 220, 235));
         y += 24 * u;
-        Text(playerKind == VehicleKind.Spaceship
-            ? $"地球へ帰還：Space で高度 {MoonReturnAlt:N0} m まで上昇"
-            : "地球へ帰還：V で宇宙船に乗り換えて高度 5,000 m へ", x, y, 14, Rgb(145, 225, 255));
+        bool confirming = moonReturnConfirmUntil > time;
+        Text(confirming ? "もう一度 R を押すと地球へ帰還します" : "M：月面地図　R を2回：地球へ帰還",
+            x, y, 14, confirming ? Rgb(255, 220, 145) : Rgb(145, 225, 255));
         y += 22 * u;
         Text("重力：1.62 m/s²（地球の約 1/6G）", x, y, 13, Rgb(255, 220, 145));
 
         // 上部中央：基地方向ガイド
-        if (baseDist > 25)
+        if (moonAreaLimit || baseDist > 25)
         {
             double bearing = (Math.Atan2(-m.PX, -m.PZ) * 180.0 / Math.PI + 360.0) % 360.0;
-            string gText = $"静かの海ベース（着陸パッド）  {Compass(bearing)}へ {baseDist:N0} m";
+            string gText = moonAreaLimit ? "探索エリアの境界です。内側へ向きを変えてください。"
+                : $"静かの海ベース  {Compass(bearing)}へ {baseDist:N0} m";
             var gm = Measure(gText, 15);
             float gw = gm.X + 40 * u;
             Panel((sw - gw) / 2f, 16 * u, gw, 32 * u, new Color(18, 30, 50, 200));
@@ -510,36 +549,53 @@ public sealed partial class App
 
         string help = playerKind == VehicleKind.Spaceship
             ? "↑↓ 推進/減速　←→ 旋回　Space 上昇（高度5,000mで地球帰還）　Shift 降下・着陸　V 車に乗り換え　F4 速度上限　C 視点"
-            : "↑↓ アクセル/ブレーキ　←→ ハンドル　Space 月面ジャンプ / ドリフト　H AT/MT切替　V 乗り物(宇宙船で帰還)　F4 速度上限　C 視点";
+            : IsFlyer(playerKind)
+                ? "↑↓ 推進/減速　←→ 旋回　Space 上昇　Shift 降下　V 乗り物　C 視点"
+                : "↑↓ アクセル/ブレーキ　←→ ハンドル　Space 月面ジャンプ / ドリフト　H AT/MT切替　V 乗り物　C 視点";
         var hm = Measure(help, 13);
         Text(help, (sw - hm.X) / 2, sh - 24 * u, 13, new Color(255, 255, 255, 175));
+        if (bigMap) DrawMoonMap(sw, sh, u, confirming);
     }
 
     private void DrawMoonRadar(float x, float y, float size, float u)
     {
-        var m = moon!;
         Panel(x, y, size, size, new Color(10, 16, 26, 205));
-        float cx = x + size * 0.5f, cy = y + size * 0.5f;
-        float r = size * 0.42f;
-        Raylib.DrawCircleLines((int)cx, (int)cy, r, new Color((byte)80, (byte)110, (byte)150, (byte)140));
-        Raylib.DrawCircleLines((int)cx, (int)cy, r * 0.5f, new Color((byte)80, (byte)110, (byte)150, (byte)90));
-        Text("N", cx - 4 * u, y + 6 * u, 12, Sub);
+        DrawMoonMapPlot(new Vector2(x + size / 2, y + size / 2), size * 0.39f, u, labels: false);
+        Text("M：月面地図", x + 8 * u, y + size - 18 * u, 11, Sub);
+    }
 
-        // 静かの海ベース (0, 0) の相対位置（1px = 6m）
-        float bx = cx + (float)(-m.PX / 6.0) * u;
-        float by = cy - (float)(-m.PZ / 6.0) * u;
-        float dx = bx - cx, dy = by - cy;
-        float dist = MathF.Sqrt(dx * dx + dy * dy);
-        if (dist > r) { bx = cx + dx / dist * r; by = cy + dy / dist * r; }
-        Raylib.DrawCircleV(new Vector2(bx, by), 4.5f * u, Orange);
-        Text("基地", bx + 6 * u, by - 6 * u, 11, Rgb(255, 215, 130));
+    private void DrawMoonMap(int sw, int sh, float u, bool confirming)
+    {
+        Raylib.DrawRectangle(0, 0, sw, sh, Rgb(11, 19, 32));
+        TextCentered("静かの海　月面地図", sw / 2f, 38 * u, 34, Color.White);
+        TextCentered("橙の円：探索エリアの境界　水色の矢印：現在地", sw / 2f, 90 * u, 16, Sub);
+        DrawMoonMapPlot(new Vector2(sw / 2f, sh * 0.51f), Math.Min(sw * 0.35f, sh * 0.32f), u, labels: true);
+        TextCentered(confirming ? "もう一度 R を押すと地球へ帰還します" : "M・Esc：閉じる　R を2回：地球へ帰還",
+            sw / 2f, sh - 78 * u, 18, confirming ? Orange : Color.White);
+    }
 
-        // 自機マーカー（向き矢印）
+    private void DrawMoonMapPlot(Vector2 center, float radius, float u, bool labels)
+    {
+        Vector2 MapPoint(double x, double z) => center + new Vector2((float)x, (float)-z) * (radius / (float)MoonWorld.AreaRadius);
+        var m = moon!;
+        Raylib.DrawCircleV(center, radius, Rgb(31, 43, 62));
+        Raylib.DrawCircleLines((int)center.X, (int)center.Y, radius * 0.5f, Rgb(72, 87, 109));
+        Raylib.DrawCircleLines((int)center.X, (int)center.Y, radius, Orange);
+        TextCentered("N", center.X, center.Y - radius - (labels ? 24 : 17) * u, 12, Sub);
+        foreach (var site in MoonWorld.Sites)
+        {
+            var point = MapPoint(site.X, site.Z);
+            Raylib.DrawCircleV(point, (labels ? 6 : 3.5f) * u, Rgb(255, 218, 144));
+            if (labels) Text(site.Name, point.X + 10 * u, point.Y - 10 * u, 16, Color.White);
+        }
+
+        var player = MapPoint(m.PX, m.PZ);
         float hr = heading * MathF.PI / 180f;
-        var tip = new Vector2(cx + MathF.Sin(hr) * 7 * u, cy - MathF.Cos(hr) * 7 * u);
-        var lft = new Vector2(cx + MathF.Sin(hr - 2.4f) * 5 * u, cy - MathF.Cos(hr - 2.4f) * 5 * u);
-        var rgt = new Vector2(cx + MathF.Sin(hr + 2.4f) * 5 * u, cy - MathF.Cos(hr + 2.4f) * 5 * u);
+        float arrow = (labels ? 12 : 8) * u;
+        Vector2 ArrowPoint(float angle, float length) => player + new Vector2(MathF.Sin(angle), -MathF.Cos(angle)) * length;
+        var tip = ArrowPoint(hr, arrow);
+        var lft = ArrowPoint(hr - 2.4f, arrow * 0.7f);
+        var rgt = ArrowPoint(hr + 2.4f, arrow * 0.7f);
         Raylib.DrawTriangle(tip, rgt, lft, Rgb(120, 230, 255));
-        Text("月面レーダー", x + 8 * u, y + size - 18 * u, 11, Sub);
     }
 }

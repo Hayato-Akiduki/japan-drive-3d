@@ -11,6 +11,13 @@ namespace JapanDrive;
 /// </summary>
 public sealed class MoonWorld
 {
+    public const double AreaRadius = 900;
+    internal sealed record Site(string Name, double X, double Z);
+    private static readonly Site Crater = new("クレーター", -320, 230);
+    private static readonly Site Ridge = new("地球展望丘", 345, 295);
+    private static readonly Site Station = new("南部観測所", 135, -480);
+    internal static IReadOnlyList<Site> Sites { get; } = [new("静かの海ベース", 0, 0), Crater, Ridge, Station];
+
     public double PX, PZ;
     public float Altitude;
 
@@ -39,6 +46,16 @@ public sealed class MoonWorld
 
     /// <summary>月面座標 → 描画座標（プレイヤー位置基準）。</summary>
     public Vector3 R(double x, float y, double z) => new((float)(PX - x), y, (float)(z - PZ));
+
+    internal static bool LimitPosition(ref double x, ref double z)
+    {
+        double radiusSquared = x * x + z * z;
+        if (radiusSquared <= AreaRadius * AreaRadius) return false;
+        double scale = AreaRadius / Math.Sqrt(radiusSquared);
+        x *= scale;
+        z *= scale;
+        return true;
+    }
 
     private static ulong Hash2(long x, long z, ulong salt = 0)
     {
@@ -90,8 +107,20 @@ public sealed class MoonWorld
         // 大クレーター（260m セル）＋ 中小クレーター（95m セル）
         h += CraterLayer(x, z, 260.0, 42.0, 88.0, 12.0, 0x1111UL);
         h += CraterLayer(x, z, 95.0, 14.0, 32.0, 5.2, 0x2222UL);
+        double craterRatio = Math.Sqrt(Dist2(x, z, Crater.X, Crater.Z)) / 115;
+        h -= 27 * Falloff(craterRatio);
+        h += 12 * Falloff(Math.Abs(craterRatio - 0.92) / 0.30);
+        h += 43 * Falloff(Math.Sqrt(Dist2(x, z, Ridge.X, Ridge.Z)) / 160);
+        double stationBlend = Falloff(Math.Sqrt(Dist2(x, z, Station.X, Station.Z)) / 45);
+        h *= 1 - stationBlend;
 
         return (float)(h * flatBlend);
+    }
+
+    private static double Falloff(double ratio)
+    {
+        double t = 1 - Math.Clamp(ratio, 0, 1);
+        return t * t * (3 - 2 * t);
     }
 
     private static double CraterLayer(double x, double z, double cell, double minR, double maxR, double maxDepth, ulong salt)
@@ -170,7 +199,31 @@ public sealed class MoonWorld
         DrawSpaceBackdrop(cameraPos, time);
         DrawTerrain();
         DrawLunarBase(time);
+        DrawExplorationMarkers();
         DrawBoulders();
+    }
+
+    private void DrawExplorationMarkers()
+    {
+        for (int i = 0; i < 64; i++)
+        {
+            double angle = i * Math.PI / 32;
+            double x = Math.Sin(angle) * AreaRadius, z = Math.Cos(angle) * AreaRadius;
+            var marker = R(x, SurfaceY(x, z), z);
+            Raylib.DrawCylinder(marker, 0.35f, 0.65f, 5, 6, Rgb(116, 99, 75));
+            Raylib.DrawSphereEx(marker + new Vector3(0, 5.2f, 0), 0.95f, 6, 8, Rgb(255, 172, 54));
+        }
+        foreach (var site in Sites.Skip(1))
+        {
+            var marker = R(site.X, SurfaceY(site.X, site.Z), site.Z);
+            Raylib.DrawCylinder(marker, 0.9f, 1.8f, 12, 8, Rgb(153, 168, 181));
+            Raylib.DrawSphereEx(marker + new Vector3(0, 12, 0), 2.1f, 10, 12, Rgb(84, 222, 251));
+            if (site == Station)
+            {
+                Raylib.DrawCube(marker + new Vector3(0, 0.12f, 0), 25, 0.24f, 20, Rgb(69, 87, 115));
+                Raylib.DrawCylinder(marker + new Vector3(0, 8f, 0), 5, 2, 2, 14, Rgb(214, 228, 234));
+            }
+        }
     }
 
     /// <summary>漆黒の宇宙空間に満天の星・青い地球・太陽を描く。</summary>

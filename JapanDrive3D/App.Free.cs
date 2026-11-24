@@ -802,15 +802,16 @@ public sealed partial class App
 
     private void HandleFreeKeys()
     {
+        if (onMoon && Raylib.IsKeyPressed(KeyboardKey.R))
+        {
+            RequestMoonReturn();
+            return;
+        }
         HandleTransmissionKeys(allowQE: true);
         if (Raylib.IsKeyPressed(KeyboardKey.V)) SwitchVehicle();
         if (Raylib.IsKeyPressed(KeyboardKey.C)) cockpit = !cockpit;
         if (Raylib.IsKeyPressed(KeyboardKey.B)) stampBook = true;
-        if (Raylib.IsKeyPressed(KeyboardKey.M))
-        {
-            if (onMoon) game.AddLog("月面では日本地図を開けません（宇宙船で高度 5,000m へ上昇すると地球へ帰還できます）。");
-            else bigMap = !bigMap;
-        }
+        if (Raylib.IsKeyPressed(KeyboardKey.M)) bigMap = !bigMap;
         if (Raylib.IsKeyPressed(KeyboardKey.LeftBracket) || Raylib.IsKeyPressed(KeyboardKey.Comma)) CycleMiniMapZoom(-1);
         if (Raylib.IsKeyPressed(KeyboardKey.RightBracket) || Raylib.IsKeyPressed(KeyboardKey.Period)) CycleMiniMapZoom(1);
         if (Raylib.IsKeyPressed(KeyboardKey.Escape))
