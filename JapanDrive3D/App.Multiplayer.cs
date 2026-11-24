@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Sockets;
 using System.Numerics;
 using JapanDrive.Multiplayer;
 using Raylib_cs;
@@ -10,11 +11,11 @@ public sealed partial class App
 {
     private bool roomMenu;
     private bool roomEditCode;
-    private string relayUrl = Environment.GetEnvironmentVariable("JAPANDRIVE_RELAY_URL") ?? "http://localhost:5080";
+    private string relayUrl = Environment.GetEnvironmentVariable("JAPANDRIVE_RELAY_URL") ?? "";
     private string joinCode = "";
     private string roomMessage = "";
-    private Task<RoomConnection>? openingRoom;
-    private RoomConnection? room;
+    private Task<IRoomConnection>? openingRoom;
+    private IRoomConnection? room;
     private Task<RoomSnapshot>? exchangingRoom;
     private float nextRoomUpdate;
     private float copiedUntil;
@@ -70,22 +71,18 @@ public sealed partial class App
         }
         if (openingRoom != null) return;
         string value = roomEditCode ? joinCode : relayUrl;
-        int maxLength = roomEditCode ? RoomProtocol.CodeLength : 240;
+        const int maxLength = 240;
         if (Raylib.IsKeyPressed(KeyboardKey.Backspace) && value.Length > 0) value = value[..^1];
         if ((Raylib.IsKeyDown(KeyboardKey.LeftControl) || Raylib.IsKeyDown(KeyboardKey.RightControl)) &&
             Raylib.IsKeyPressed(KeyboardKey.V))
         {
             string clipboard = (Raylib.GetClipboardText_() ?? "").Trim();
-            value = roomEditCode
-                ? new string(clipboard.ToUpperInvariant().Where(RoomProtocol.Alphabet.Contains).Take(maxLength).ToArray())
-                : new string(clipboard.Where(c => c is >= '!' and <= '~').Take(maxLength).ToArray());
+            value = new string(clipboard.Where(c => c is >= '!' and <= '~').Take(maxLength).ToArray());
         }
         for (int key = Raylib.GetCharPressed(); key > 0; key = Raylib.GetCharPressed())
         {
             if (value.Length >= maxLength || key is < '!' or > '~') continue;
-            char character = (char)key;
-            if (!roomEditCode) value += character;
-            else if (RoomProtocol.Alphabet.Contains(char.ToUpperInvariant(character))) value += char.ToUpperInvariant(character);
+            value += (char)key;
         }
         if (roomEditCode) joinCode = value;
         else relayUrl = value;
@@ -95,21 +92,47 @@ public sealed partial class App
 
     private void ConnectRoom(bool join)
     {
-        if (!Uri.TryCreate(relayUrl.Trim().TrimEnd('/') + "/", UriKind.Absolute, out var address) ||
+        string input = joinCode.Trim();
+        string code = input.ToUpperInvariant();
+        if (join && DirectRoom.TryInvite(input, out _))
+        {
+            roomMessage = "ホストに接続中…";
+            openingRoom = DirectRoom.JoinAsync(input);
+            return;
+        }
+
+        string endpoint = relayUrl.Trim();
+        bool relay = endpoint.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+            endpoint.StartsWith("http://", StringComparison.OrdinalIgnoreCase);
+        if (join && !RoomProtocol.IsCode(code))
+        {
+            roomMessage = "6文字のコードか招待リンクを入力してください。";
+            return;
+        }
+        if (!relay)
+        {
+            if (!join && endpoint.Length != 0 && !DirectRoom.TryHostAddress(endpoint))
+            {
+                roomMessage = "公開アドレスはIPv4かホスト名で入力してください。";
+                return;
+            }
+            roomMessage = join ? "同じLAN内のルームを検索中…" : "ルームを作成中…";
+            openingRoom = join ? DirectRoom.JoinAsync(code) : DirectRoom.HostAsync(endpoint);
+            return;
+        }
+        if (!Uri.TryCreate(endpoint.TrimEnd('/') + "/", UriKind.Absolute, out var address) ||
             address.Scheme is not ("https" or "http") || address.Host.Length == 0 ||
             address.UserInfo.Length != 0 || address.Fragment.Length != 0 || address.Query.Length != 0)
         {
             roomMessage = "中継サーバーの URL を確認してください。";
             return;
         }
-        if (join && !RoomProtocol.IsCode(joinCode))
-        {
-            roomMessage = "友達から受け取った6文字のコードを入力してください。";
-            return;
-        }
         roomMessage = "中継サーバーに接続中…";
-        openingRoom = RoomConnection.OpenAsync(address, join ? joinCode : null);
+        openingRoom = OpenRelayRoom(address, join ? code : null);
     }
+
+    private static async Task<IRoomConnection> OpenRelayRoom(Uri address, string? code) =>
+        await RoomConnection.OpenAsync(address, code);
 
     private void UpdateMultiplayer()
     {
@@ -122,13 +145,15 @@ public sealed partial class App
                 roomMenu = false;
                 roomMessage = "";
                 nextRoomUpdate = 0;
+                copiedUntil = 0;
                 StartGame(GameMode.Free);
             }
-            catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException or
-                InvalidDataException or System.Text.Json.JsonException)
+            catch (Exception exception) when (IsRoomError(exception))
             {
                 roomMessage = exception is HttpRequestException { StatusCode: not null } ? exception.Message
-                    : "接続できませんでした。URL とサーバーの起動状態を確認してください。";
+                    : exception is SocketException { SocketErrorCode: SocketError.AddressAlreadyInUse }
+                        ? "そのPCではすでにルームが開かれています。"
+                        : "接続できませんでした。ホストの起動状態と接続先を確認してください。";
             }
         }
 
@@ -143,6 +168,11 @@ public sealed partial class App
             Raylib.SetClipboardText(room.Ticket.Code);
             copiedUntil = time + 2.5f;
         }
+        if (room.Invite is { } invite && Raylib.IsKeyPressed(KeyboardKey.F7))
+        {
+            Raylib.SetClipboardText(invite);
+            copiedUntil = time + 2.5f;
+        }
         if (exchangingRoom is { IsCompleted: true } exchange)
         {
             exchangingRoom = null;
@@ -152,8 +182,7 @@ public sealed partial class App
                 UpdateRemoteVehicles(room.Ticket.Seat);
                 roomFailures = 0;
             }
-            catch (Exception exception) when (exception is HttpRequestException or OperationCanceledException or
-                InvalidDataException or System.Text.Json.JsonException)
+            catch (Exception exception) when (IsRoomError(exception))
             {
                 roomFailures++;
                 if (exception is HttpRequestException { StatusCode: HttpStatusCode.NotFound or HttpStatusCode.Unauthorized } ||
@@ -173,6 +202,10 @@ public sealed partial class App
             exchangingRoom = room.ExchangeAsync(pose);
         }
     }
+
+    private static bool IsRoomError(Exception exception) =>
+        exception is HttpRequestException or OperationCanceledException or SocketException or IOException or
+            InvalidDataException or System.Text.Json.JsonException or System.Net.NetworkInformation.NetworkInformationException;
 
     private void UpdateRemoteVehicles(int localSeat)
     {
@@ -261,8 +294,8 @@ public sealed partial class App
         var panel = RoomPanel(sw, sh, u);
         Panel(panel.X, panel.Y, panel.Width, panel.Height, Rgb(20, 36, 56));
         Text("マルチプレイ　最大4人", panel.X + 24 * u, panel.Y + 25 * u, 25, Color.White);
-        Text("中継サーバーの URL", panel.X + 24 * u, panel.Y + 74 * u, 15, Sub);
-        Text("招待コード（参加する場合）", panel.X + 24 * u, panel.Y + 157 * u, 15, Sub);
+        Text("公開アドレス / 中継URL（LANなら空欄）", panel.X + 24 * u, panel.Y + 74 * u, 15, Sub);
+        Text("6文字コード / 招待リンク（参加する場合）", panel.X + 24 * u, panel.Y + 157 * u, 15, Sub);
         for (int i = 0; i < 4; i++)
         {
             var rect = RoomControl(panel, i, u);
@@ -276,7 +309,7 @@ public sealed partial class App
                 while (skip < value.Length && Measure(value[skip..], 18).X > rect.Width - 24 * u) skip++;
                 Text(value[skip..], rect.X + 12 * u, rect.Y + 11 * u, 18, Color.White);
             }
-            else TextCentered(i == 2 ? "新しいルームを作る" : "コードで参加", rect.X + rect.Width / 2,
+            else TextCentered(i == 2 ? "新しいルームを作る" : "ルームに参加", rect.X + rect.Width / 2,
                 rect.Y + 13 * u, 17, Color.White);
         }
         TextCentered(roomMessage, sw / 2f, panel.Y + 316 * u, 15, Rgb(255, 220, 154));
@@ -288,9 +321,9 @@ public sealed partial class App
         if (room == null) return;
         int count = Math.Max(1, roomPlayers.Length);
         int otherWorld = roomPlayers.Count(player => player?.Pose is { } pose && pose.Moon != onMoon);
-        string status = roomFailures > 0 ? "中継サーバーに再接続中…"
+        string status = roomFailures > 0 ? "ルームに再接続中…"
             : $"ルーム {room.Ticket.Code}　{count}/{RoomProtocol.Capacity}人　" +
-                (time < copiedUntil ? "コピーしました" : "F6：コードをコピー");
+                (time < copiedUntil ? "コピーしました" : room.Invite != null ? "F6：コード　F7：招待リンク" : "F6：コードをコピー");
         if (otherWorld > 0) status += $"　{(onMoon ? "地球" : "月")}に {otherWorld}人";
         float width = Measure(status, 15).X + 24 * u;
         Panel((sw - width) / 2, sh - 105 * u, width, 30 * u, Rgb(20, 57, 71));

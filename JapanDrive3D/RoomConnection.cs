@@ -5,7 +5,15 @@ using JapanDrive.Multiplayer;
 
 namespace JapanDrive;
 
-internal sealed class RoomConnection(Uri address, RoomTicket ticket)
+internal interface IRoomConnection
+{
+    RoomTicket Ticket { get; }
+    string? Invite { get; }
+    Task<RoomSnapshot> ExchangeAsync(PlayerPose pose);
+    Task LeaveAsync();
+}
+
+internal sealed class RoomConnection(Uri address, RoomTicket ticket) : IRoomConnection
 {
     private static readonly HttpClient Http = new(new SocketsHttpHandler { AllowAutoRedirect = false })
     {
@@ -14,6 +22,7 @@ internal sealed class RoomConnection(Uri address, RoomTicket ticket)
     };
 
     public RoomTicket Ticket { get; } = ticket;
+    public string? Invite => null;
 
     public static async Task<RoomConnection> OpenAsync(Uri address, string? code)
     {
