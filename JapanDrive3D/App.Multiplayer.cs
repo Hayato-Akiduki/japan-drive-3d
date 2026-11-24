@@ -111,13 +111,14 @@ public sealed partial class App
         }
         if (!relay)
         {
-            if (!join && endpoint.Length != 0 && !DirectRoom.TryHostAddress(endpoint))
+            if (endpoint.Length != 0 && !DirectRoom.TryHostAddress(endpoint))
             {
-                roomMessage = "公開アドレスはIPv4かホスト名で入力してください。";
+                roomMessage = "接続先はホスト名かIPv4で入力してください。";
                 return;
             }
-            roomMessage = join ? "同じLAN内のルームを検索中…" : "ルームを作成中…";
-            openingRoom = join ? DirectRoom.JoinAsync(code) : DirectRoom.HostAsync(endpoint);
+            roomMessage = !join ? "ルームを作成中…" : endpoint.Length == 0
+                ? "同じLAN内のルームを検索中…" : "ホストに接続中…";
+            openingRoom = join ? DirectRoom.JoinAsync(code, endpoint) : DirectRoom.HostAsync(endpoint);
             return;
         }
         if (!Uri.TryCreate(endpoint.TrimEnd('/') + "/", UriKind.Absolute, out var address) ||
@@ -294,7 +295,7 @@ public sealed partial class App
         var panel = RoomPanel(sw, sh, u);
         Panel(panel.X, panel.Y, panel.Width, panel.Height, Rgb(20, 36, 56));
         Text("マルチプレイ　最大4人", panel.X + 24 * u, panel.Y + 25 * u, 25, Color.White);
-        Text("公開アドレス / 中継URL（LANなら空欄）", panel.X + 24 * u, panel.Y + 74 * u, 15, Sub);
+        Text("ホスト名 / 中継URL（LANなら空欄）", panel.X + 24 * u, panel.Y + 74 * u, 15, Sub);
         Text("6文字コード / 招待リンク（参加する場合）", panel.X + 24 * u, panel.Y + 157 * u, 15, Sub);
         for (int i = 0; i < 4; i++)
         {

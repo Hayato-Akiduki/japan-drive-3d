@@ -31,23 +31,22 @@ internal static class DirectRoom
         return true;
     }
 
-    public static bool TryHostAddress(string address)
-    {
-        return TryInvite($"{Scheme}://{address.Trim()}/AAAAAA", out _) ||
-            TryInvite($"{Scheme}://{address.Trim()}:{Port}/AAAAAA", out _);
-    }
+    public static bool TryHostAddress(string address) => TryHostInvite(address, "AAAAAA", out _);
+
+    private static bool TryHostInvite(string address, string code, out Uri invite) =>
+        TryInvite($"{Scheme}://{address.Trim()}/{code}", out invite) ||
+        TryInvite($"{Scheme}://{address.Trim()}:{Port}/{code}", out invite);
 
     public static Task<IRoomConnection> HostAsync(string advertisedAddress) => Task.Run<IRoomConnection>(() =>
     {
         string code = RandomNumberGenerator.GetString(RoomProtocol.Alphabet, RoomProtocol.CodeLength);
         string endpoint = advertisedAddress.Trim();
         if (endpoint.Length == 0) return new Host(code, null);
-        string invite = $"{Scheme}://{endpoint}/{code}";
-        if (!TryInvite(invite, out _)) invite = $"{Scheme}://{endpoint}:{Port}/{code}";
-        return new Host(code, invite);
+        if (!TryHostInvite(endpoint, code, out var invite)) throw new InvalidDataException();
+        return new Host(code, invite.AbsoluteUri);
     });
 
-    public static async Task<IRoomConnection> JoinAsync(string input)
+    public static async Task<IRoomConnection> JoinAsync(string input, string address = "")
     {
         string code;
         string host;
@@ -61,8 +60,18 @@ internal static class DirectRoom
         else
         {
             code = input.Trim().ToUpperInvariant();
-            host = (await DiscoverAsync(code)).ToString();
-            port = Port;
+            if (!RoomProtocol.IsCode(code)) throw new InvalidDataException();
+            if (address.Length != 0)
+            {
+                if (!TryHostInvite(address, code, out var endpoint)) throw new InvalidDataException();
+                host = endpoint.IdnHost;
+                port = endpoint.Port;
+            }
+            else
+            {
+                host = (await DiscoverAsync(code)).ToString();
+                port = Port;
+            }
         }
         var response = await SendAsync(host, port, new Request(code, "join"));
         var ticket = response.Ticket;
@@ -145,7 +154,7 @@ internal static class DirectRoom
         if (response.Status == 200) return response;
         string message = response.Status switch
         {
-            404 => "ルームが見つかりません。招待リンクを確認してください。",
+            404 => "ルームが見つかりません。ホスト名とコードを確認してください。",
             409 => "ルームが満員です（最大4人）。",
             401 => "ホストとの接続が切れました。",
             _ => "ホストからエラーが返りました。",
