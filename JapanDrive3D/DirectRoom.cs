@@ -37,13 +37,13 @@ internal static class DirectRoom
         TryInvite($"{Scheme}://{address.Trim()}/{code}", out invite) ||
         TryInvite($"{Scheme}://{address.Trim()}:{Port}/{code}", out invite);
 
-    public static Task<IRoomConnection> HostAsync(string advertisedAddress) => Task.Run<IRoomConnection>(() =>
+    public static Task<IRoomConnection> HostAsync(string advertisedAddress, RoomMode mode = RoomMode.Free) => Task.Run<IRoomConnection>(() =>
     {
         string code = RandomNumberGenerator.GetString(RoomProtocol.Alphabet, RoomProtocol.CodeLength);
         string endpoint = advertisedAddress.Trim();
-        if (endpoint.Length == 0) return new Host(code, null);
+        if (endpoint.Length == 0) return new Host(code, null, mode);
         if (!TryHostInvite(endpoint, code, out var invite)) throw new InvalidDataException();
-        return new Host(code, invite.AbsoluteUri);
+        return new Host(code, invite.AbsoluteUri, mode);
     });
 
     public static async Task<IRoomConnection> JoinAsync(string input, string address = "")
@@ -75,7 +75,8 @@ internal static class DirectRoom
         }
         var response = await SendAsync(host, port, new Request(code, "join"));
         var ticket = response.Ticket;
-        if (ticket == null || ticket.Code != code || ticket.Token == Guid.Empty || ticket.Seat is < 2 or > RoomProtocol.Capacity)
+        if (ticket == null || ticket.Code != code || ticket.Token == Guid.Empty ||
+            ticket.Seat is < 2 or > RoomProtocol.Capacity || !Enum.IsDefined(ticket.Mode))
             throw new InvalidDataException();
         return new Guest(host, port, ticket);
     }
@@ -156,6 +157,7 @@ internal static class DirectRoom
         {
             404 => "ルームが見つかりません。ホスト名とコードを確認してください。",
             409 => "ルームが満員です（最大4人）。",
+            423 => "試合中です。終了後に参加してください。",
             401 => "ホストとの接続が切れました。",
             _ => "ホストからエラーが返りました。",
         };
@@ -190,7 +192,7 @@ internal static class DirectRoom
         public async Task<RoomSnapshot> ExchangeAsync(PlayerPose pose)
         {
             var response = await SendAsync(host, port, new Request(Ticket.Code, "pose", Ticket.Token, pose));
-            if (response.Snapshot?.Players == null || response.Snapshot.Players.Length > RoomProtocol.Capacity)
+            if (response.Snapshot == null || !RoomProtocol.ValidSnapshot(response.Snapshot))
                 throw new InvalidDataException();
             return response.Snapshot;
         }
@@ -214,6 +216,7 @@ internal static class DirectRoom
 
         private readonly object gate = new();
         private readonly List<Member> members;
+        private readonly RoomMatch match;
         private readonly TcpListener listener = new(IPAddress.Any, Port);
         private readonly UdpClient discovery;
         private readonly CancellationTokenSource close = new();
@@ -222,9 +225,10 @@ internal static class DirectRoom
         public RoomTicket Ticket { get; }
         public string? Invite { get; }
 
-        public Host(string code, string? invite)
+        public Host(string code, string? invite, RoomMode mode)
         {
-            Ticket = new RoomTicket(code, Guid.NewGuid(), 1);
+            Ticket = new RoomTicket(code, Guid.NewGuid(), 1, mode);
+            match = new RoomMatch(mode);
             Invite = invite;
             members = [new Member(Ticket)];
             listener.Start(20);
@@ -309,9 +313,10 @@ internal static class DirectRoom
                 members.RemoveAll(member => member.Ticket.Seat != 1 && Environment.TickCount64 - member.LastSeen > 30_000);
                 if (request.Action == "join")
                 {
+                    if (match.Locked) return new Response(423);
                     if (members.Count >= RoomProtocol.Capacity) return new Response(409);
                     int seat = Enumerable.Range(2, RoomProtocol.Capacity - 1).First(n => members.All(m => m.Ticket.Seat != n));
-                    var guest = new RoomTicket(Ticket.Code, Guid.NewGuid(), seat);
+                    var guest = new RoomTicket(Ticket.Code, Guid.NewGuid(), seat, Ticket.Mode);
                     members.Add(new Member(guest));
                     return new Response(200, Ticket: guest);
                 }
@@ -326,8 +331,8 @@ internal static class DirectRoom
                     return new Response(400);
                 member.LastSeen = Environment.TickCount64;
                 member.Pose = pose;
-                return new Response(200, Snapshot: new RoomSnapshot(
-                    members.Select(m => new RoomPlayer(m.Ticket.Seat, m.Pose)).ToArray()));
+                var players = members.Select(m => new RoomPlayer(m.Ticket.Seat, m.Pose)).ToArray();
+                return new Response(200, Snapshot: match.Update(players, member.Ticket.Seat, pose, Environment.TickCount64));
             }
         }
     }

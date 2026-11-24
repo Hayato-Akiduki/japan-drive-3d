@@ -1,4 +1,5 @@
 using System.Numerics;
+using JapanDrive.Multiplayer;
 using Raylib_cs;
 using static JapanDrive.Draw;
 
@@ -123,6 +124,11 @@ public sealed partial class App
 
     private void UpdateMoon(float dt)
     {
+        if (roomRound?.Phase == RoundPhase.Countdown)
+        {
+            UpdateCamera(dt);
+            return;
+        }
         var m = moon!;
         bool up = Raylib.IsKeyDown(KeyboardKey.Up) || Raylib.IsKeyDown(KeyboardKey.W);
         bool down = Raylib.IsKeyDown(KeyboardKey.Down) || Raylib.IsKeyDown(KeyboardKey.S);
@@ -433,6 +439,7 @@ public sealed partial class App
         var m = moon!;
         scene.FogScale = 100f; // 月は大気がないため霧フェードを無効化
         m.Draw(camera.Position, time);
+        DrawMatchBeacon(m);
 
         if (IsFlyer(playerKind))
         {
@@ -525,7 +532,8 @@ public sealed partial class App
         Text($"静かの海ベースから {baseDist:N0} m　向き：{Compass(heading)}", x, y, 15, Rgb(210, 220, 235));
         y += 24 * u;
         bool confirming = moonReturnConfirmUntil > time;
-        Text(confirming ? "もう一度 R を押すと地球へ帰還します" : "M：月面地図　R を2回：地球へ帰還",
+        Text(CompetitiveRoom ? "M：月面地図　N を2回：ルームを退出"
+            : confirming ? "もう一度 R を押すと地球へ帰還します" : "M：月面地図　R を2回：地球へ帰還",
             x, y, 14, confirming ? Rgb(255, 220, 145) : Rgb(145, 225, 255));
         y += 22 * u;
         Text("重力：1.62 m/s²（地球の約 1/6G）", x, y, 13, Rgb(255, 220, 145));
@@ -570,7 +578,8 @@ public sealed partial class App
         TextCentered("静かの海　月面地図", sw / 2f, 38 * u, 34, Color.White);
         TextCentered("橙の円：探索エリアの境界　水色の矢印：現在地", sw / 2f, 90 * u, 16, Sub);
         DrawMoonMapPlot(new Vector2(sw / 2f, sh * 0.51f), Math.Min(sw * 0.35f, sh * 0.32f), u, labels: true);
-        TextCentered(confirming ? "もう一度 R を押すと地球へ帰還します" : "M・Esc：閉じる　R を2回：地球へ帰還",
+        TextCentered(CompetitiveRoom ? "M・Esc：閉じる　オレンジの点：試合の目印"
+            : confirming ? "もう一度 R を押すと地球へ帰還します" : "M・Esc：閉じる　R を2回：地球へ帰還",
             sw / 2f, sh - 78 * u, 18, confirming ? Orange : Color.White);
     }
 
@@ -590,6 +599,8 @@ public sealed partial class App
         }
 
         var player = MapPoint(m.PX, m.PZ);
+        if (MatchTarget() is { } target)
+            Raylib.DrawCircleV(MapPoint(target.X, target.Z), 6 * u, Orange);
         DrawRoomMapPlayers(pose => MapPoint(pose.X, pose.Z), u);
         float hr = heading * MathF.PI / 180f;
         float arrow = (labels ? 12 : 8) * u;

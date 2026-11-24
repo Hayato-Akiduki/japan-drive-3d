@@ -6,5 +6,6 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="..\Multiplayer\RoomProtocol.cs" Link="RoomProtocol.cs" />
+    <Compile Include="..\Multiplayer\RoomMatch.cs" Link="RoomMatch.cs" />
   </ItemGroup>
 </Project>

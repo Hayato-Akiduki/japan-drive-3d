@@ -11,6 +11,10 @@ public sealed partial class App
 {
     private bool roomMenu;
     private bool roomEditCode;
+    private RoomMode selectedRoomMode;
+    private RoundSnapshot? roomRound;
+    private bool startRoomRound;
+    private bool CompetitiveRoom => room != null && room.Ticket.Mode != RoomMode.Free;
     private string relayUrl = Environment.GetEnvironmentVariable("JAPANDRIVE_RELAY_URL") ?? "";
     private string joinCode = "";
     private string roomMessage = "";
@@ -30,7 +34,7 @@ public sealed partial class App
     private static Rectangle RoomPanel(int sw, int sh, float u)
     {
         float width = Math.Min(sw - 32 * u, 670 * u);
-        return new Rectangle((sw - width) / 2, (sh - 390 * u) / 2, width, 390 * u);
+        return new Rectangle((sw - width) / 2, (sh - 446 * u) / 2, width, 446 * u);
     }
 
     private void OpenRoomMenu()
@@ -44,8 +48,9 @@ public sealed partial class App
     {
         0 => new(panel.X + 24 * u, panel.Y + 99 * u, panel.Width - 48 * u, 44 * u),
         1 => new(panel.X + 24 * u, panel.Y + 182 * u, panel.Width - 48 * u, 44 * u),
-        2 => new(panel.X + 24 * u, panel.Y + 251 * u, (panel.Width - 60 * u) / 2, 48 * u),
-        _ => new(panel.X + panel.Width / 2 + 6 * u, panel.Y + 251 * u, (panel.Width - 60 * u) / 2, 48 * u),
+        2 => new(panel.X + 24 * u, panel.Y + 307 * u, (panel.Width - 60 * u) / 2, 48 * u),
+        3 => new(panel.X + panel.Width / 2 + 6 * u, panel.Y + 307 * u, (panel.Width - 60 * u) / 2, 48 * u),
+        _ => new(panel.X + 24 * u, panel.Y + 248 * u, panel.Width - 48 * u, 42 * u),
     };
 
     private void UpdateRoomMenu()
@@ -61,10 +66,11 @@ public sealed partial class App
         if (Raylib.IsMouseButtonPressed(MouseButton.Left))
         {
             var mouse = Raylib.GetMousePosition();
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < 5; i++)
             {
                 if (!Raylib.CheckCollisionPointRec(mouse, RoomControl(panel, i, Ui))) continue;
                 if (i < 2) roomEditCode = i == 1;
+                else if (i == 4) selectedRoomMode = (RoomMode)(((int)selectedRoomMode + 1) % 4);
                 else ConnectRoom(join: i == 3);
                 break;
             }
@@ -118,7 +124,7 @@ public sealed partial class App
             }
             roomMessage = !join ? "ルームを作成中…" : endpoint.Length == 0
                 ? "同じLAN内のルームを検索中…" : "ホストに接続中…";
-            openingRoom = join ? DirectRoom.JoinAsync(code, endpoint) : DirectRoom.HostAsync(endpoint);
+            openingRoom = join ? DirectRoom.JoinAsync(code, endpoint) : DirectRoom.HostAsync(endpoint, selectedRoomMode);
             return;
         }
         if (!Uri.TryCreate(endpoint.TrimEnd('/') + "/", UriKind.Absolute, out var address) ||
@@ -129,11 +135,11 @@ public sealed partial class App
             return;
         }
         roomMessage = "中継サーバーに接続中…";
-        openingRoom = OpenRelayRoom(address, join ? code : null);
+        openingRoom = OpenRelayRoom(address, join ? code : null, selectedRoomMode);
     }
 
-    private static async Task<IRoomConnection> OpenRelayRoom(Uri address, string? code) =>
-        await RoomConnection.OpenAsync(address, code);
+    private static async Task<IRoomConnection> OpenRelayRoom(Uri address, string? code, RoomMode mode) =>
+        await RoomConnection.OpenAsync(address, code, mode);
 
     private void UpdateMultiplayer()
     {
@@ -148,6 +154,13 @@ public sealed partial class App
                 nextRoomUpdate = 0;
                 copiedUntil = 0;
                 StartGame(GameMode.Free);
+                if (CompetitiveRoom)
+                {
+                    playerKind = VehicleKind.Sports;
+                    ApplyVehicle();
+                    EnterMoon(landed: true);
+                    SpawnMatchVehicle(room.Ticket.Seat);
+                }
             }
             catch (Exception exception) when (IsRoomError(exception))
             {
@@ -174,12 +187,23 @@ public sealed partial class App
             Raylib.SetClipboardText(invite);
             copiedUntil = time + 2.5f;
         }
+        if (CompetitiveRoom && room.Ticket.Seat == 1 && Raylib.IsKeyPressed(KeyboardKey.F8) &&
+            roomRound?.Phase is RoundPhase.Waiting or RoundPhase.Finished &&
+            RoomMatch.CanStart(roomPlayers))
+            startRoomRound = true;
         if (exchangingRoom is { IsCompleted: true } exchange)
         {
             exchangingRoom = null;
             try
             {
-                roomPlayers = exchange.GetAwaiter().GetResult().Players;
+                var snapshot = exchange.GetAwaiter().GetResult();
+                roomPlayers = snapshot.Players;
+                if (CompetitiveRoom && snapshot.Match is { } match)
+                {
+                    if (roomRound?.Number != match.Number && match.Phase is RoundPhase.Countdown or RoundPhase.Playing)
+                        SpawnMatchVehicle(room.Ticket.Seat);
+                    roomRound = match;
+                }
                 UpdateRemoteVehicles(room.Ticket.Seat);
                 roomFailures = 0;
             }
@@ -199,7 +223,8 @@ public sealed partial class App
         {
             nextRoomUpdate = time + 0.1f;
             var pose = new PlayerPose(onMoon, playerKind.ToString(), moon?.PX ?? free.PX, moon?.PZ ?? free.PZ,
-                freeY, heading, pitch, bank, freeKmh);
+                freeY, heading, pitch, bank, freeKmh, roomRound?.Number ?? 0, startRoomRound);
+            startRoomRound = false;
             exchangingRoom = room.ExchangeAsync(pose);
         }
     }
@@ -248,6 +273,8 @@ public sealed partial class App
         exchangingRoom = null;
         roomFailures = 0;
         roomPlayers = [];
+        roomRound = null;
+        startRoomRound = false;
         remoteVehicles.Clear();
     }
 
@@ -258,7 +285,7 @@ public sealed partial class App
 
     private void DrawRemoteVehicles()
     {
-        foreach (var vehicle in remoteVehicles.Values)
+        foreach (var (seat, vehicle) in remoteVehicles)
         {
             var pose = InterpolateRemote(vehicle);
             if (pose.Moon != onMoon || !Enum.TryParse<VehicleKind>(pose.Vehicle, out var kind) ||
@@ -266,7 +293,7 @@ public sealed partial class App
             Vector3 pos = onMoon ? moon!.R(pose.X, pose.Y, pose.Z) : free!.R(pose.X, pose.Y, pose.Z);
             float distance = Vector3.Distance(pos, camera.Position);
             if (!(distance < 1200)) continue;
-            Color color = Rgb(100, 221, 240);
+            Color color = roomRound is { Phase: RoundPhase.Playing } match && match.It == seat ? Orange : Rgb(100, 221, 240);
             if (IsFlyer(kind))
             {
                 Rlgl.PushMatrix();
@@ -297,7 +324,7 @@ public sealed partial class App
         Text("マルチプレイ　最大4人", panel.X + 24 * u, panel.Y + 25 * u, 25, Color.White);
         Text("ホスト名 / 中継URL（LANなら空欄）", panel.X + 24 * u, panel.Y + 74 * u, 15, Sub);
         Text("6文字コード / 招待リンク（参加する場合）", panel.X + 24 * u, panel.Y + 157 * u, 15, Sub);
-        for (int i = 0; i < 4; i++)
+        for (int i = 0; i < 5; i++)
         {
             var rect = RoomControl(panel, i, u);
             bool active = i < 2 ? roomEditCode == (i == 1) :
@@ -310,11 +337,12 @@ public sealed partial class App
                 while (skip < value.Length && Measure(value[skip..], 18).X > rect.Width - 24 * u) skip++;
                 Text(value[skip..], rect.X + 12 * u, rect.Y + 11 * u, 18, Color.White);
             }
-            else TextCentered(i == 2 ? "新しいルームを作る" : "ルームに参加", rect.X + rect.Width / 2,
+            else TextCentered(i == 4 ? $"作成モード：{RoomModeName(selectedRoomMode)}　（クリックで変更）"
+                : i == 2 ? "新しいルームを作る" : "ルームに参加", rect.X + rect.Width / 2,
                 rect.Y + 13 * u, 17, Color.White);
         }
-        TextCentered(roomMessage, sw / 2f, panel.Y + 316 * u, 15, Rgb(255, 220, 154));
-        TextCentered("Ctrl+V：貼り付け　Tab：入力欄の切替　Esc：戻る", sw / 2f, panel.Y + 350 * u, 13, Sub);
+        TextCentered(roomMessage, sw / 2f, panel.Y + 372 * u, 15, Rgb(255, 220, 154));
+        TextCentered("Ctrl+V：貼り付け　Tab：入力欄の切替　Esc：戻る", sw / 2f, panel.Y + 406 * u, 13, Sub);
     }
 
     private void DrawRoomStatus(int sw, int sh, float u)
@@ -329,6 +357,7 @@ public sealed partial class App
         float width = Measure(status, 15).X + 24 * u;
         Panel((sw - width) / 2, sh - 105 * u, width, 30 * u, Rgb(20, 57, 71));
         TextCentered(status, sw / 2f, sh - 99 * u, 15, Color.White);
+        if (CompetitiveRoom) DrawMatchStatus(sw, sh, u);
     }
 
     private void DrawRoomMapPlayers(Func<PlayerPose, Vector2> project, float u)

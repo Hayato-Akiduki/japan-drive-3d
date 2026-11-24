@@ -802,13 +802,13 @@ public sealed partial class App
 
     private void HandleFreeKeys()
     {
-        if (onMoon && Raylib.IsKeyPressed(KeyboardKey.R))
+        if (!CompetitiveRoom && onMoon && Raylib.IsKeyPressed(KeyboardKey.R))
         {
             RequestMoonReturn();
             return;
         }
         HandleTransmissionKeys(allowQE: true);
-        if (Raylib.IsKeyPressed(KeyboardKey.V)) SwitchVehicle();
+        if (!CompetitiveRoom && Raylib.IsKeyPressed(KeyboardKey.V)) SwitchVehicle();
         if (Raylib.IsKeyPressed(KeyboardKey.C)) cockpit = !cockpit;
         if (Raylib.IsKeyPressed(KeyboardKey.B)) stampBook = true;
         if (Raylib.IsKeyPressed(KeyboardKey.M)) bigMap = !bigMap;

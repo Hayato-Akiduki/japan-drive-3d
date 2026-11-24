@@ -724,7 +724,7 @@ public sealed partial class App
             return;
         }
         bool roadShortcut = Raylib.IsKeyDown(KeyboardKey.LeftAlt) || Raylib.IsKeyDown(KeyboardKey.RightAlt);
-        if (!bigMap && detour == null && !roadShortcut)
+        if (!CompetitiveRoom && !bigMap && detour == null && !roadShortcut)
         {
             for (int i = 0; i < PlayerKinds.Length; i++)
             {
