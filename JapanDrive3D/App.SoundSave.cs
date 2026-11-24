@@ -10,6 +10,7 @@ public sealed partial class App
     private bool Persist => shotFile == null || demoPersist;   // 確認用のデモ実行ではセーブしない
     private bool demoPersist;
     private float saveTimer;
+    private bool saveFailed;
     private int lastViolations, lastCrashes, lastToll;
     private bool clearRecorded;
     private double lastStepDist;
@@ -49,7 +50,9 @@ public sealed partial class App
             save.FreeZ = free.PZ;
             save.FreeHeading = onMoon ? earthHeading : heading;
         }
-        save.Save();
+        if (!title && !freeRoam)
+            save.Tour = game.Cleared ? null : game.CaptureTour(playerKind.ToString());
+        saveFailed = !save.Save();
         saveTimer = 0;
     }
 
@@ -161,7 +164,7 @@ public sealed partial class App
         Audio.Update();
 
         saveTimer += dt;
-        if (saveTimer > 30 && !title) SaveNow();
+        if (saveTimer > 30 && (!title || saveFailed)) SaveNow();
     }
 
     /// <summary>エフェクトに合わせた効果音。</summary>

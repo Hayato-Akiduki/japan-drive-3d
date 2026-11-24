@@ -1242,6 +1242,7 @@ public sealed partial class App
         if (onMoon && moon != null)
         {
             DrawMoonHud();
+            if (stampBook) DrawStampBook(Raylib.GetScreenWidth(), Raylib.GetScreenHeight(), Ui);
             return;
         }
         var f = free!;

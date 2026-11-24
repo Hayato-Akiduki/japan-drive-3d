@@ -5,7 +5,7 @@ namespace JapanDrive;
 public enum GameMode { Tour, Free }
 
 /// <summary>ゲームの状態とルール（描画とは独立）。</summary>
-public sealed class Game
+public sealed partial class Game
 {
     public const double TankSize = 50;       // L
     public const double FuelPrice = 175;     // 円/L

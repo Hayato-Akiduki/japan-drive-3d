@@ -47,7 +47,7 @@ public sealed partial class App
         DrawStampPopup(sw, sh, u);
         if (bigMap) DrawBigMap(sw, sh, u);
         if (stampBook) DrawStampBook(sw, sh, u);
-        if (game.Cleared) DrawClear(sw, sh, u);
+        if (game.Cleared && !stampBook && !bigMap) DrawClear(sw, sh, u);
     }
 
     // ================= 分岐・寄り道・スタンプ =================
@@ -170,7 +170,7 @@ public sealed partial class App
         int cols = Spots.All.Count > 100 ? 14 : Spots.All.Count > 70 ? 12 : 10;
         int rows = (Spots.All.Count + cols - 1) / cols;
         float cellW = (pw - 40 * u) / cols;
-        float cellH = (ph - 100 * u) / rows;
+        float cellH = (ph - 225 * u) / rows;
         float r = Math.Min(cellW, cellH) * 0.42f;
         for (int i = 0; i < Spots.All.Count; i++)
         {
@@ -186,6 +186,77 @@ public sealed partial class App
                 TextCentered(spot.Name.Length > 7 ? spot.Name[..7] : spot.Name, c.X, c.Y - 14 * u, 11, Rgb(160, 150, 135));
                 TextCentered(spot.City.Name, c.X, c.Y + 4 * u, 11, Rgb(170, 160, 145));
             }
+        }
+        float sectionY = sh - 146 * u;
+        string heading = freeRoam && onMoon ? "地球の名所を地図に表示するには地球へ戻ってください"
+            : "近くの未取得の名所（直線距離の目安）";
+        TextCentered(heading, sw / 2f, sectionY, 17, Rgb(90, 50, 30));
+        if (freeRoam && onMoon) return;
+        var nearby = NearbyUncollectedSpots();
+        if (nearby.Length == 0)
+            TextCentered("すべての名所スタンプを獲得済みです", sw / 2f, sectionY + 40 * u, 15, Rgb(90, 50, 30));
+        for (int i = 0; i < nearby.Length; i++)
+        {
+            var (spot, distance) = nearby[i];
+            var card = NearbySpotRect(i, sw, sh, u);
+            bool hover = Raylib.CheckCollisionPointRec(Raylib.GetMousePosition(), card);
+            Panel(card.X, card.Y, card.Width, card.Height, hover ? Rgb(117, 73, 43) : Rgb(87, 54, 34));
+            TextCentered(spot.Name, card.X + card.Width / 2, card.Y + 9 * u, 15, Color.White);
+            TextCentered($"{distance:0.#} km　地図に表示", card.X + card.Width / 2, card.Y + 34 * u, 12, Rgb(255, 226, 184));
+        }
+    }
+
+    private Spot? highlightedSpot;
+
+    private PointF SpotMapPosition(Spot spot)
+    {
+        if (freeRoam && free != null && free.SpotPos.TryGetValue(spot, out var position))
+            return FreeWorld.ToMap(position.X, position.Z);
+        if (GeoFeatures.RealSpots.TryGetValue(spot.Name, out var real))
+            return Game.ToWorld(real.Lat, real.Lon);
+        var city = Game.ToWorld(spot.City);
+        return new PointF(city.X + 0.08f, city.Y - 0.06f);
+    }
+
+    private (Spot Spot, double Distance)[] NearbyUncollectedSpots()
+    {
+        var current = CarMapPos;
+        return Spots.All.Where(spot => !stamps.ContainsKey(spot.Key))
+            .Select(spot =>
+            {
+                var p = SpotMapPosition(spot);
+                double dx = p.X - current.X, dy = p.Y - current.Y;
+                return (Spot: spot, Distance: 111 * Math.Sqrt(dx * dx + dy * dy));
+            })
+            .OrderBy(item => item.Distance).Take(3).ToArray();
+    }
+
+    private static Rectangle NearbySpotRect(int index, int sw, int sh, float u)
+    {
+        float width = Math.Min(sw - 80 * u, 960 * u);
+        float cell = width / 3;
+        return new Rectangle((sw - width) / 2 + index * cell + 4 * u, sh - 117 * u, cell - 8 * u, 58 * u);
+    }
+
+    private void HandleStampBookSelection()
+    {
+        if ((freeRoam && onMoon) || !Raylib.IsMouseButtonReleased(MouseButton.Left)) return;
+        var nearby = NearbyUncollectedSpots();
+        int sw = Raylib.GetScreenWidth(), sh = Raylib.GetScreenHeight();
+        var mouse = Raylib.GetMousePosition();
+        for (int i = 0; i < nearby.Length; i++)
+        {
+            if (!Raylib.CheckCollisionPointRec(mouse, NearbySpotRect(i, sw, sh, Ui))) continue;
+            highlightedSpot = nearby[i].Spot;
+            var p = SpotMapPosition(highlightedSpot);
+            var (baseCenter, _) = BaseBigMapBounds();
+            bigMapPan = new Vector2(p.X, p.Y) - baseCenter;
+            bigMapZoom = Math.Max(bigMapZoom, 2.8f);
+            centerMapOnPlayer = false;
+            bigMapDragging = bigMapMoved = false;
+            stampBook = false;
+            bigMap = true;
+            return;
         }
     }
 
@@ -218,6 +289,7 @@ public sealed partial class App
         TextCentered("日本一周ドライブ 3D", sw / 2f + 3 * u, sh * 0.16f + 3 * u, 64, new Color(0, 0, 0, 150));
         TextCentered("日本一周ドライブ 3D", sw / 2f, sh * 0.16f, 64, Color.White);
         TextCentered("高速道路で日本をめぐり、各地の名所でスタンプを集めよう", sw / 2f, sh * 0.16f + 84 * u, 20, Rgb(230, 235, 245));
+        DrawTourResume(sw, sh, u, mouse);
 
         string[,] items =
         {
@@ -232,8 +304,11 @@ public sealed partial class App
             if (hover) Raylib.DrawRectangleRoundedLinesEx(r, 0.14f, 6, 2f * u, Orange);
             Raylib.DrawCircleV(new Vector2(r.X + 48 * u, r.Y + r.Height / 2), 26 * u, hover ? Rgb(255, 165, 50) : Orange);
             TextCentered(items[i, 0], r.X + 48 * u, r.Y + r.Height / 2 - 17 * u, 30, Color.White);
-            Text(items[i, 1], r.X + 96 * u, r.Y + 16 * u, 26, Color.White);
-            Text(items[i, 2], r.X + 96 * u, r.Y + 56 * u, 15, Sub);
+            Text(i == 0 && CanResumeTour ? "日本一周を最初から始める" : items[i, 1], r.X + 96 * u, r.Y + 16 * u, 26, Color.White);
+            string description = i == 0 && newTourConfirm > 0
+                ? "途中経過を上書きします。もう一度 1 キーかクリックで開始。"
+                : items[i, 2];
+            Text(description, r.X + 96 * u, r.Y + 56 * u, 15, Sub);
         }
         float belowCardsY = sh * 0.46f + 2 * (96 * u + 18 * u);
         TextCentered("数字キー または クリックで選んでください", sw / 2f, belowCardsY + 8 * u, 16, new Color(255, 255, 255, 200));
@@ -733,17 +808,7 @@ public sealed partial class App
         // 10) 名所スタンプ地点アイコン
         foreach (var spot in Spots.All)
         {
-            PointF mapP;
-            if (freeRoam && free != null && free.SpotPos.TryGetValue(spot, out var spos))
-                mapP = FreeWorld.ToMap(spos.X, spos.Z);
-            else if (GeoFeatures.RealSpots.TryGetValue(spot.Name, out var real))
-                mapP = Game.ToWorld(real.Lat, real.Lon);
-            else
-            {
-                var cp = Game.ToWorld(spot.City);
-                mapP = new PointF(cp.X + 0.08f, cp.Y - 0.06f);
-            }
-            var sp = to(mapP);
+            var sp = to(SpotMapPosition(spot));
             if (!InView(sp, 30)) continue;
             bool got = stamps.ContainsKey(spot.Key);
             Raylib.DrawPoly(sp, 4, (effZoom > 1.8f ? 5.2f : 4.2f) * u, 45, got ? Rgb(145, 155, 165) : Rgb(255, 90, 90));
@@ -797,12 +862,7 @@ public sealed partial class App
             {
                 foreach (var spot in Spots.All)
                 {
-                    PointF mapP = freeRoam && free != null && free.SpotPos.TryGetValue(spot, out var spos)
-                        ? FreeWorld.ToMap(spos.X, spos.Z)
-                        : GeoFeatures.RealSpots.TryGetValue(spot.Name, out var real)
-                            ? Game.ToWorld(real.Lat, real.Lon)
-                            : new PointF(Game.ToWorld(spot.City).X + 0.08f, Game.ToWorld(spot.City).Y - 0.06f);
-                    var sp = to(mapP);
+                    var sp = to(SpotMapPosition(spot));
                     if (!InView(sp, 30)) continue;
                     bool got = stamps.ContainsKey(spot.Key);
                     TryDrawLabel((got ? "●" : "★") + spot.Name, sp.X + 6 * u, sp.Y - 7 * u, 11f, got ? Rgb(185, 190, 195) : Rgb(255, 215, 130));
@@ -991,6 +1051,14 @@ public sealed partial class App
         Raylib.DrawRectangle(0, 0, sw, sh, new Color(14, 32, 56, 244));
         var (center, origin, scale) = BigMapView();
         DrawNetwork(center, origin, scale, u, true);
+        if (highlightedSpot is { } spot)
+        {
+            var point = MapPt(SpotMapPosition(spot), center, origin, scale);
+            Raylib.DrawRing(point, 10 * u, 13 * u, 0, 360, 32, Orange);
+            float width = Measure(spot.Name, 16).X + 20 * u;
+            Panel(point.X - width / 2, point.Y - 44 * u, width, 26 * u, Rgb(15, 30, 47));
+            TextCentered(spot.Name, point.X, point.Y - 42 * u, 16, Color.White);
+        }
 
         // 上部バー：操作ガイド
         Panel(16 * u, 10 * u, sw - 32 * u, 38 * u, new Color(10, 22, 38, 220));
@@ -1083,12 +1151,7 @@ public sealed partial class App
         // 3) 名所のホバー判定
         foreach (var spot in Spots.All)
         {
-            PointF spPt = freeRoam && free != null && free.SpotPos.TryGetValue(spot, out var spos)
-                ? FreeWorld.ToMap(spos.X, spos.Z)
-                : GeoFeatures.RealSpots.TryGetValue(spot.Name, out var real)
-                    ? Game.ToWorld(real.Lat, real.Lon)
-                    : new PointF(Game.ToWorld(spot.City).X + 0.08f, Game.ToWorld(spot.City).Y - 0.06f);
-            float d = Vector2.Distance(MapPt(spPt, center, origin, scale), mouse);
+            float d = Vector2.Distance(MapPt(SpotMapPosition(spot), center, origin, scale), mouse);
             if (d < bestD)
             {
                 bestD = d;

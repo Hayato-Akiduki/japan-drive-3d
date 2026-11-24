@@ -28,6 +28,12 @@ public sealed class SaveData
     public double? FreeZ { get; set; }
     public float FreeHeading { get; set; }
 
+    [System.Text.Json.Serialization.JsonInclude]
+    internal TourProgress? Tour { get; set; }
+    public int TourHints { get; set; }
+    public int FreeHints { get; set; }
+    private bool recoveredBackup;
+
     /// <summary>保存先（環境変数 JAPANDRIVE_SAVE で変えられる：テスト用）。</summary>
     public static string FilePath => Environment.GetEnvironmentVariable("JAPANDRIVE_SAVE") ??
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "JapanDrive3D", "save.json");
@@ -36,36 +42,58 @@ public sealed class SaveData
 
     public static SaveData Load()
     {
+        string path = FilePath;
+        if (Read(path) is { } current) return current;
+        if (Read(path + ".bak") is { } backup)
+        {
+            backup.recoveredBackup = true;
+            return backup;
+        }
+        return new SaveData { recoveredBackup = true };
+    }
+
+    private static SaveData? Read(string path)
+    {
         try
         {
-            if (File.Exists(FilePath))
+            if (File.Exists(path))
             {
-                var data = JsonSerializer.Deserialize<SaveData>(File.ReadAllText(FilePath), Options) ?? new SaveData();
-                data.Stamps ??= new();
+                var data = JsonSerializer.Deserialize<SaveData>(File.ReadAllText(path), Options);
+                if (data != null) data.Stamps ??= new();
                 return data;
             }
         }
         catch
         {
-            // 壊れていたら新しく始める（元のファイルは残しておく）
-            try { File.Copy(FilePath, FilePath + ".broken", true); } catch { }
+            if (path == FilePath)
+                try { File.Copy(path, path + ".broken", true); } catch { }
         }
-        return new SaveData();
+        return null;
     }
 
-    public void Save()
+    public bool Save()
     {
         try
         {
             string path = Path.GetFullPath(FilePath);
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-            string tmp = path + ".tmp";
-            File.WriteAllText(tmp, JsonSerializer.Serialize(this, Options));
-            File.Move(tmp, path, true);
+            string tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(tmp, JsonSerializer.Serialize(this, Options));
+                if (File.Exists(path) && !recoveredBackup) File.Replace(tmp, path, path + ".bak");
+                else File.Move(tmp, path, true);
+                recoveredBackup = false;
+                return true;
+            }
+            finally
+            {
+                try { File.Delete(tmp); } catch { }
+            }
         }
         catch
         {
-            // 保存できなくてもゲームは続ける
+            return false;
         }
     }
 }

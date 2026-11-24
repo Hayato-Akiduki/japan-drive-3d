@@ -199,9 +199,20 @@ public sealed partial class App
         Raylib.UnloadImage(image);
     }
 
-    private void StartGame(GameMode mode)
+    private void StartGame(GameMode mode, bool resumeTour = false)
     {
-        game = new Game(mode) { FreeDrive = true };
+        var nextGame = new Game(mode) { FreeDrive = true };
+        if (resumeTour)
+        {
+            if (save.Tour is not { } progress || !nextGame.RestoreTour(progress))
+            {
+                tourResumeUnavailable = true;
+                return;
+            }
+            if (Enum.TryParse(progress.Vehicle, out VehicleKind vehicle) && Array.IndexOf(PlayerKinds, vehicle) >= 0)
+                playerKind = vehicle;
+        }
+        game = nextGame;
         if (demoHour is float h) game.SetClock(h * 60);
         playerS = 0;
         playerU = Traffic.DrivingLane;
@@ -211,6 +222,10 @@ public sealed partial class App
         scene.PlayerS = 0;
         traffic.Reset(0);
         bigMap = stampBook = false;
+        highlightedSpot = null;
+        newTourConfirm = 0;
+        resetConfirm = 0;
+        upWasDown = false;
         settingsOpen = false;
         draggingSlider = -1;
         detour = null;
@@ -230,12 +245,19 @@ public sealed partial class App
         revLimiting = isDrifting = false;
         driftYaw = 0f;
         clearRecorded = false;
-        lastViolations = lastCrashes = lastToll = 0;
+        lastViolations = game.Violations;
+        lastCrashes = game.Crashes;
+        lastToll = game.TollPaid;
         Audio.Play(Audio.Select);
         ApplyVehicle();
         freeRoam = mode == GameMode.Free;
         if (freeRoam) StartFree();
-        else if (demoAt != null)
+        else if (resumeTour && game.Road is { } road)
+        {
+            scene.BeginRoad(playerS, road);
+            lastRoad = road;
+        }
+        else if (!resumeTour && demoAt != null)
         {
             if (MapData.TryGet(demoAt, out var targetCity)) game.PlaceAt(targetCity);
             else game.AddLog($"都市「{demoAt}」が見つからないため東京から開始します");
@@ -247,6 +269,11 @@ public sealed partial class App
             // 確認用：いくつかスタンプを押した状態でスタンプ帳を開く
             for (int i = 0; i < Spots.All.Count; i += 3) stamps[Spots.All[i].Key] = 8 * 60 + i * 37;
             stampBook = true;
+        }
+        if (mode == GameMode.Tour && !resumeTour && shotFile == null)
+        {
+            tourResumeUnavailable = false;
+            SaveNow();
         }
     }
 
@@ -277,17 +304,20 @@ public sealed partial class App
             return;
         }
 
+        bool wasStampBook = stampBook;
         HandleKeys();
         if (title) return;
+        UpdateDrivingHints();
         NotifyUpdateInGame();
         UpdateFade(dt);
         popupTime += dt;
         if (bigMap || stampBook)
         {
-            if (bigMap)
+            if (bigMap && !wasStampBook && !stampBook)
             {
                 if (freeRoam) HandleFreeMapMouse();
-                else HandleBigMapMouse();
+                else if (detour == null) HandleBigMapMouse();
+                else UpdateBigMapCamera(out _, out _);
             }
             UpdateCamera(dt);
             return; // 地図・スタンプ帳を見ている間は一時停止
@@ -410,12 +440,15 @@ public sealed partial class App
     private void UpdateTitle(float dt)
     {
         titleTime += dt;
+        newTourConfirm = Math.Max(0, newTourConfirm - dt);
         playerS += 22 * dt;
         scene.PlayerS = playerS;
         traffic.Update(dt, playerS, playerU, 22);
         HandleUpdateKeys();
-        if (Raylib.IsKeyPressed(KeyboardKey.One) || Raylib.IsKeyPressed(KeyboardKey.Kp1)) StartGame(GameMode.Tour);
+        if (Raylib.IsKeyPressed(KeyboardKey.One) || Raylib.IsKeyPressed(KeyboardKey.Kp1)) RequestNewTour();
         else if (Raylib.IsKeyPressed(KeyboardKey.Two) || Raylib.IsKeyPressed(KeyboardKey.Kp2)) StartGame(GameMode.Free);
+        else if (CanResumeTour && (Raylib.IsKeyPressed(KeyboardKey.Three) || Raylib.IsKeyPressed(KeyboardKey.Kp3)))
+            StartGame(GameMode.Tour, resumeTour: true);
         else if (Raylib.IsKeyPressed(KeyboardKey.S)) OpenSettings();
         else if (Raylib.IsMouseButtonPressed(MouseButton.Left))
         {
@@ -423,7 +456,9 @@ public sealed partial class App
             float u = Draw.Ui;
             var mouse = Raylib.GetMousePosition();
             if (Raylib.CheckCollisionPointRec(mouse, SettingsButtonRect(sw, u))) OpenSettings();
-            else if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(0, sw, sh, u))) StartGame(GameMode.Tour);
+            else if (CanResumeTour && Raylib.CheckCollisionPointRec(mouse, ResumeTourRect(sw, sh, u)))
+                StartGame(GameMode.Tour, resumeTour: true);
+            else if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(0, sw, sh, u))) RequestNewTour();
             else if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(1, sw, sh, u))) StartGame(GameMode.Free);
             else
             {
@@ -667,6 +702,7 @@ public sealed partial class App
         if (stampBook)
         {
             if (Raylib.IsKeyPressed(KeyboardKey.B) || Raylib.IsKeyPressed(KeyboardKey.Escape)) stampBook = false;
+            else HandleStampBookSelection();
             return;
         }
         bool roadShortcut = Raylib.IsKeyDown(KeyboardKey.LeftAlt) || Raylib.IsKeyDown(KeyboardKey.RightAlt);
@@ -690,6 +726,11 @@ public sealed partial class App
 
         if (detour != null)
         {
+            if (bigMap)
+            {
+                if (Raylib.IsKeyPressed(KeyboardKey.M) || Raylib.IsKeyPressed(KeyboardKey.Escape)) bigMap = false;
+                return;
+            }
             HandleTransmissionKeys(allowQE: true);
             if (Raylib.IsKeyPressed(KeyboardKey.Enter) || Raylib.IsKeyPressed(KeyboardKey.KpEnter) ||
                 Raylib.IsKeyPressed(KeyboardKey.Escape) || (detour.Arrived && Raylib.IsKeyPressed(KeyboardKey.Up)))
@@ -862,7 +903,9 @@ public sealed partial class App
             DrawFreeWorld3D();
             Raylib.EndMode3D();
             DrawFreeHud();
+            DrawDrivingHint(w, Draw.Ui);
             DrawInGameSettings();
+            DrawSaveStatus(w, h, Draw.Ui);
             if (fade > 0) Raylib.DrawRectangle(0, 0, w, h, new Color((byte)0, (byte)0, (byte)0, (byte)(255 * Math.Clamp(fade, 0, 1))));
             Raylib.EndDrawing();
             return;
@@ -893,8 +936,10 @@ public sealed partial class App
         else
         {
             DrawHud();
+            DrawDrivingHint(w, Draw.Ui);
             DrawInGameSettings();
         }
+        DrawSaveStatus(w, h, Draw.Ui);
         if (fade > 0) Raylib.DrawRectangle(0, 0, w, h, new Color((byte)0, (byte)0, (byte)0, (byte)(255 * Math.Clamp(fade, 0, 1))));
         Raylib.EndDrawing();
     }
