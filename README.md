@@ -48,6 +48,8 @@
 |---|---|
 | `JapanDrive3D/` | 3D 版（本体）。[Raylib-cs](https://github.com/ChrisDill/Raylib-cs) を使用 |
 | `JapanDrive/` | 最初に作った 2D 版（WinForms）。地図データとゲームのルールは 3D 版と共通 |
+| `JapanDriveRelay/` | ルームコードで遊ぶための中継サーバー（ASP.NET Core） |
+| `Multiplayer/` | 3D版と中継サーバーで共有する通信データ |
 | `installer/` | インストーラーの設定（NSIS） |
 | `tools/` | アイコン作成（`make-icon.ps1`）、配布物の一括作成（`build-release.ps1`）、地図データの作成（`make-geo.py`：Natural Earth から `JapanDrive/JapanGeo.cs` を作る） |
 | `docs/` | README 用の画像 |
@@ -78,6 +80,20 @@ powershell -ExecutionPolicy Bypass -File tools/build-release.ps1
 - 古いゲーム（v1.1.0 / v1.2.0）は `JapanDrive3D-win-x64.zip` を探して exe を入れ替えます
 
 どちらかを置き忘れると、その版のゲームには更新が届かないので、両方とも名前を変えずに置いてください。
+
+## ルームコードでマルチプレイ
+
+3D版のタイトル画面で「マルチプレイ」（4キー）を開きます。全員が同じ中継サーバーのURLを入力し、1人が「新しいルームを作る」を選びます。画面に出る6文字のコードを友達に共有してください（F6でコピー）。友達はコードを入力して「コードで参加」を選びます。
+
+1ルーム最大4人でフリーモードを遊べます。同じ場所にいるプレイヤーは水色の乗り物と地図のマーカーで表示され、地球と月に分かれた場合は別エリアの人数が表示されます。交通やスタンプは各自のゲームで進みます。タイトルに戻るとルームから退出します。
+
+自分のPCで試すときは、ゲームを起動する前に次のコマンドで中継サーバーを起動します。ゲームを2つ起動し、どちらも中継サーバーのURLに `http://localhost:5080` を使うと、同じPCでルーム作成と参加を確認できます。
+
+```powershell
+dotnet run --project JapanDriveRelay -- --urls http://localhost:5080
+```
+
+離れた人と遊ぶ場合は、全員がアクセスできるホストに `JapanDriveRelay` を1インスタンスで稼働させ、HTTPSで公開してください。ゲームに入力するのは公開したHTTPSのURLです。開発・配布時は `JAPANDRIVE_RELAY_URL` 環境変数でURLの初期値を指定できます。ルームはサーバーのメモリに保持され、全員が退出するかサーバーが再起動すると終了します。
 
 ## アメリカへの旅
 

@@ -590,6 +590,7 @@ public sealed partial class App
         }
 
         var player = MapPoint(m.PX, m.PZ);
+        DrawRoomMapPlayers(pose => MapPoint(pose.X, pose.Z), u);
         float hr = heading * MathF.PI / 180f;
         float arrow = (labels ? 12 : 8) * u;
         Vector2 ArrowPoint(float angle, float length) => player + new Vector2(MathF.Sin(angle), -MathF.Cos(angle)) * length;

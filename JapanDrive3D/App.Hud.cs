@@ -335,8 +335,10 @@ public sealed partial class App
         }
         TextCentered("（設定・記録は自動でセーブされます）", sw / 2f, togglesY + 34 * u, 12, new Color(255, 255, 255, 165));
         DrawUpdateBanner(sw, sh, u);
+        DrawRoomButton(u, mouse);
         DrawSettingsButton(sw, u, mouse);
         if (settingsOpen) DrawSettings(sw, sh, u, mouse);
+        if (roomMenu) DrawRoomMenu(sw, sh, u);
     }
 
     /// <summary>3Dの案内標識に文字を重ねる。</summary>
@@ -921,6 +923,7 @@ public sealed partial class App
 
         // 13) 自車マーカー
         var carP = to(CarMapPos);
+        if (freeRoam) DrawRoomMapPlayers(pose => to(FreeWorld.ToMap(pose.X, pose.Z)), u);
         float rot = CarMapRot;
         Raylib.DrawPoly(carP, 3, 9.5f * u, rot, Rgb(255, 50, 50));
         Raylib.DrawPolyLinesEx(carP, 3, 9.5f * u, rot, 2 * u, Color.White);

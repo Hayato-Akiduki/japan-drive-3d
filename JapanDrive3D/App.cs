@@ -164,6 +164,7 @@ public sealed partial class App
             float dt = Math.Min(Raylib.GetFrameTime(), 0.05f);
             time += dt;
             Update(dt);
+            UpdateMultiplayer();
             UpdateSound(dt);
             Render();
             if (shotFile != null && (demoTime += dt) > shotSeconds)
@@ -179,6 +180,7 @@ public sealed partial class App
             }
         }
 
+        LeaveMultiplayer();
         SaveNow();
         UnloadSpaceTravelGraphics();
         free?.Dispose();
@@ -285,6 +287,11 @@ public sealed partial class App
     private void Update(float dt)
     {
         Draw.Ui = Raylib.GetScreenHeight() / 900f;
+        if (title && roomMenu)
+        {
+            UpdateRoomMenu();
+            return;
+        }
         if (spaceTravel != null)
         {
             UpdateSpaceTravel(dt);
@@ -458,6 +465,7 @@ public sealed partial class App
         else if (Raylib.IsKeyPressed(KeyboardKey.Two) || Raylib.IsKeyPressed(KeyboardKey.Kp2)) StartGame(GameMode.Free);
         else if (CanResumeTour && (Raylib.IsKeyPressed(KeyboardKey.Three) || Raylib.IsKeyPressed(KeyboardKey.Kp3)))
             StartGame(GameMode.Tour, resumeTour: true);
+        else if (Raylib.IsKeyPressed(KeyboardKey.Four) || Raylib.IsKeyPressed(KeyboardKey.Kp4)) OpenRoomMenu();
         else if (Raylib.IsKeyPressed(KeyboardKey.S)) OpenSettings();
         else if (Raylib.IsMouseButtonPressed(MouseButton.Left))
         {
@@ -465,6 +473,7 @@ public sealed partial class App
             float u = Draw.Ui;
             var mouse = Raylib.GetMousePosition();
             if (Raylib.CheckCollisionPointRec(mouse, SettingsButtonRect(sw, u))) OpenSettings();
+            else if (Raylib.CheckCollisionPointRec(mouse, RoomMenuButton(u))) OpenRoomMenu();
             else if (CanResumeTour && Raylib.CheckCollisionPointRec(mouse, ResumeTourRect(sw, sh, u)))
                 StartGame(GameMode.Tour, resumeTour: true);
             else if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(0, sw, sh, u))) RequestNewTour();
@@ -920,11 +929,13 @@ public sealed partial class App
         if (freeRoam && !title)
         {
             DrawFreeWorld3D();
+            DrawRemoteVehicles();
             Raylib.EndMode3D();
             DrawFreeHud();
             DrawDrivingHint(w, Draw.Ui);
             DrawInGameSettings();
             DrawSaveStatus(w, h, Draw.Ui);
+            DrawRoomStatus(w, h, Draw.Ui);
             if (fade > 0) Raylib.DrawRectangle(0, 0, w, h, new Color((byte)0, (byte)0, (byte)0, (byte)(255 * Math.Clamp(fade, 0, 1))));
             return;
         }
