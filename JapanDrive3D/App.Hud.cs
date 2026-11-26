@@ -761,7 +761,7 @@ public sealed partial class App
         }
 
         // 11) 主要都市マーカー＆最優先ラベル
-        static bool IsKeyOverseas(string name) => name is "ハノイ" or "ホーチミン" or "バンコク" or "シンガポール" or "ジャカルタ" or "デンパサール" or "豊原" or "オハ" or "カムチャツカ" or "ウラジオストク" or "ハバロフスク" or "ソウル" or "釜山" or "済州" or "平壌" or "瀋陽" or "大連" or "北京" or "青島" or "上海" or "福州" or "アモイ" or "香港" or "台北" or "高雄" or "マニラ" or "小笠原" or "ホノルル" or "サンフランシスコ" or "ニューヨーク" or "スワード" or "アンカレジ";
+        static bool IsKeyOverseas(string name) => name is "モスクワ" or "サンクトペテルブルク" or "ノヴォシビルスク" or "イルクーツク" or "ヤクーツク" or "ハノイ" or "ホーチミン" or "バンコク" or "シンガポール" or "ジャカルタ" or "デンパサール" or "豊原" or "オハ" or "カムチャツカ" or "ウラジオストク" or "ハバロフスク" or "ソウル" or "釜山" or "済州" or "平壌" or "瀋陽" or "大連" or "北京" or "青島" or "上海" or "福州" or "アモイ" or "香港" or "台北" or "高雄" or "マニラ" or "小笠原" or "ホノルル" or "サンフランシスコ" or "ニューヨーク" or "スワード" or "アンカレジ";
         foreach (var c in MapData.Cities.OrderByDescending(c => c.IsGoal || c == game.StartCity || c == game.NavTarget ? 2 : IsKeyOverseas(c.Name) ? 1 : 0))
         {
             var p = to(Game.ToWorld(c));

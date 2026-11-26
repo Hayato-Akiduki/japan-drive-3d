@@ -207,6 +207,21 @@ public static class Spots
         S("クチン", "サラワク川・クチン猫の像", LandmarkType.Monument);
         S("バンダルスリブガワン", "スルタン・オマール・アリ・サイフディン・モスク", LandmarkType.Temple, 1);
         S("コタキナバル", "キナバル山", LandmarkType.Mountain);
+        // ロシア
+        S("モスクワ", "クレムリン・赤の広場", LandmarkType.Castle, 2);
+        S("モスクワ", "聖ワシリイ大聖堂", LandmarkType.Temple, 1);
+        S("サンクトペテルブルク", "エルミタージュ美術館（冬宮）", LandmarkType.Castle, 1);
+        S("ムルマンスク", "原子力砕氷船レーニン号", LandmarkType.Monument);
+        S("ニジニ・ノヴゴロド", "ニジニ・ノヴゴロド・クレムリン", LandmarkType.Castle);
+        S("カザン", "カザン・クレムリン", LandmarkType.Castle, 1);
+        S("エカテリンブルク", "ヨーロッパ・アジア境界碑", LandmarkType.Monument, 1);
+        S("ノヴォシビルスク", "ノヴォシビルスク・オペラ・バレエ劇場", LandmarkType.ClockTower, 1);
+        S("クラスノヤルスク", "ストルビー自然保護区", LandmarkType.Mountain);
+        S("イルクーツク", "バイカル湖（リストヴャンカ）", LandmarkType.Lake, 1);
+        S("ウランウデ", "レーニン頭像", LandmarkType.Monument, 2);
+        S("ヤクーツク", "レナ石柱群", LandmarkType.Mountain);
+        S("マガダン", "悲しみのマスク", LandmarkType.Monument, 1);
+        S("ソチ", "ソチ・オリンピック公園", LandmarkType.Monument, 2);
     }
 
     public static IEnumerable<Spot> At(City city) => All.Where(s => s.City == city);

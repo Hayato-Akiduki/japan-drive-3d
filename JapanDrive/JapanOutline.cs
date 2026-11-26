@@ -352,19 +352,19 @@ public static class JapanOutline
         }),
     };
 
-    /// <summary>地図表示用の粗い海岸線（大きな島＋樺太・韓国・台湾・東南アジア）。</summary>
+    /// <summary>地図表示用の粗い海岸線（大きな島＋樺太・韓国・台湾・東南アジア・ロシア）。</summary>
     public static readonly (double Lat, double Lon)[][] Islands =
-        JapanGeo.Outline.Select(Decode).Concat(ExtraIslands).Concat(NorthAmericaGeo.Land.Select(Decode)).Concat(SoutheastAsiaGeo.Land.Select(Decode)).ToArray();
+        JapanGeo.Outline.Select(Decode).Concat(ExtraIslands).Concat(NorthAmericaGeo.Land.Select(Decode)).Concat(SoutheastAsiaGeo.Land.Select(Decode)).Concat(RussiaGeo.Land.Select(Decode)).ToArray();
 
-    /// <summary>細かい海岸線（小さな島＋樺太・韓国・台湾・東南アジア）。</summary>
+    /// <summary>細かい海岸線（小さな島＋樺太・韓国・台湾・東南アジア・ロシア）。</summary>
     public static readonly (double Lat, double Lon)[][] Detailed =
-        JapanGeo.Land.Select(Decode).Concat(ExtraIslands).Concat(NorthAmericaGeo.Land.Select(Decode)).Concat(SoutheastAsiaGeo.Land.Select(Decode)).ToArray();
+        JapanGeo.Land.Select(Decode).Concat(ExtraIslands).Concat(NorthAmericaGeo.Land.Select(Decode)).Concat(SoutheastAsiaGeo.Land.Select(Decode)).Concat(RussiaGeo.Land.Select(Decode)).ToArray();
 
-    /// <summary>全湖沼（日本＋樺太・韓国・台湾・東南アジア）。</summary>
+    /// <summary>全湖沼（日本＋樺太・韓国・台湾・東南アジア・ロシア）。</summary>
     public static readonly (string Name, (double Lat, double Lon)[] Points)[] AllLakes =
-        JapanGeo.Lakes.Select(l => (l.Name, Decode(l.Points))).Concat(ExtraLakes).Concat(NorthAmericaGeo.Lakes.Select(l => (l.Name, Decode(l.Points)))).Concat(SoutheastAsiaGeo.Lakes.Select(l => (l.Name, Decode(l.Points)))).ToArray();
+        JapanGeo.Lakes.Select(l => (l.Name, Decode(l.Points))).Concat(ExtraLakes).Concat(NorthAmericaGeo.Lakes.Select(l => (l.Name, Decode(l.Points)))).Concat(SoutheastAsiaGeo.Lakes.Select(l => (l.Name, Decode(l.Points)))).Concat(RussiaGeo.Lakes.Select(l => (l.Name, Decode(l.Points)))).ToArray();
 
-    /// <summary>全河川（日本＋樺太・韓国・台湾・東南アジア）。</summary>
+    /// <summary>全河川（日本＋樺太・韓国・台湾・東南アジア・ロシア）。</summary>
     public static readonly (string Name, int Rank, (double Lat, double Lon)[] Points)[] AllRivers =
         JapanGeo.Rivers.Select(r => (r.Name, r.Rank, Decode(r.Points))).Concat(ExtraRivers).ToArray();
 
@@ -377,8 +377,8 @@ public static class JapanOutline
     /// <summary>地図に描かない線（大陸の切り抜きの辺や内陸の境界）なら true。</summary>
     public static bool HiddenEdge((double Lat, double Lon) a, (double Lat, double Lon) b) =>
         InlandCorners.Contains(a) || InlandCorners.Contains(b)
-        || (a.Lat == b.Lat && Array.IndexOf(SoutheastAsiaGeo.CutLats, a.Lat) >= 0)
-        || (a.Lon == b.Lon && Array.IndexOf(SoutheastAsiaGeo.CutLons, a.Lon) >= 0);
+        || (a.Lat == b.Lat && (Array.IndexOf(SoutheastAsiaGeo.CutLats, a.Lat) >= 0 || Array.IndexOf(RussiaGeo.CutLats, a.Lat) >= 0))
+        || (a.Lon == b.Lon && (Array.IndexOf(SoutheastAsiaGeo.CutLons, a.Lon) >= 0 || Array.IndexOf(RussiaGeo.CutLons, a.Lon) >= 0));
 
     /// <summary>「緯度×10000, 経度×10000」を交互に並べた整数を、緯度・経度の組に戻す。</summary>
     public static (double Lat, double Lon)[] Decode(int[] a)
