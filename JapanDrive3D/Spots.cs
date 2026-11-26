@@ -179,6 +179,34 @@ public static class Spots
         S("高雄", "蓮池潭 龍虎塔", LandmarkType.Pagoda, 1);
         S("台東", "三仙台 八拱橋", LandmarkType.Bridge, 1);
         S("マニラ", "イントラムロス・リサール記念碑", LandmarkType.Monument, 2);
+        S("セブ", "マゼラン・クロス", LandmarkType.Monument, 1);
+        S("ダバオ", "アポ山", LandmarkType.Volcano);
+        // 東南アジア
+        S("ハノイ", "ホアンキエム湖・玉山祠", LandmarkType.Lake);
+        S("ハノイ", "ホーチミン廟", LandmarkType.Monument, 2);
+        S("ハロン", "ハロン湾", LandmarkType.Lake, 1);
+        S("ダナン", "ゴールデンブリッジ（バーナーヒルズ）", LandmarkType.Bridge, 1);
+        S("ホーチミン", "サイゴン大教会・中央郵便局", LandmarkType.ClockTower, 2);
+        S("プノンペン", "王宮・シルバーパゴダ", LandmarkType.Pagoda, 2);
+        S("シェムリアップ", "アンコール・ワット", LandmarkType.Temple, 1);
+        S("ビエンチャン", "タートルアン", LandmarkType.Pagoda, 1);
+        S("バンコク", "ワット・アルン（暁の寺）", LandmarkType.Pagoda);
+        S("バンコク", "王宮・ワット・プラケオ", LandmarkType.Temple, 2);
+        S("チェンマイ", "ワット・プラタート・ドイステープ", LandmarkType.Temple, 1);
+        S("ヤンゴン", "シュエダゴン・パゴダ", LandmarkType.Pagoda, 1);
+        S("プーケット", "プーケット・ビッグブッダ", LandmarkType.Buddha);
+        S("ペナン", "ペナン大橋", LandmarkType.Bridge, 2);
+        S("クアラルンプール", "ペトロナスツインタワー", LandmarkType.Tower, 1);
+        S("シンガポール", "マーライオン・マリーナベイ", LandmarkType.Monument, 1);
+        S("ジャカルタ", "モナス（独立記念塔）", LandmarkType.Tower, 2);
+        S("バンドン", "タンクバン・プラフ火山", LandmarkType.Volcano);
+        S("ジョグジャカルタ", "ボロブドゥール遺跡", LandmarkType.Temple);
+        S("ジョグジャカルタ", "プランバナン寺院", LandmarkType.Pagoda, 2);
+        S("スラバヤ", "ブロモ山", LandmarkType.Volcano);
+        S("デンパサール", "タナロット寺院", LandmarkType.Temple, 2);
+        S("クチン", "サラワク川・クチン猫の像", LandmarkType.Monument);
+        S("バンダルスリブガワン", "スルタン・オマール・アリ・サイフディン・モスク", LandmarkType.Temple, 1);
+        S("コタキナバル", "キナバル山", LandmarkType.Mountain);
     }
 
     public static IEnumerable<Spot> At(City city) => All.Where(s => s.City == city);

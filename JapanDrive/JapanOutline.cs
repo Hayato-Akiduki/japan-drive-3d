@@ -160,11 +160,10 @@ public static class JapanOutline
             (22.65, 115.65), // 汕尾
             (22.18, 114.32), // 香港・深圳南岸
             (21.95, 113.25), // マカオ・珠海
-            (21.15, 110.45), // 湛江（雷州半島）
-            // 大陸内陸側境界（マップ表示領域の外側へ逃がし、不自然な内陸直線をなくす）
-            (20.00, 105.00),
-            (38.00, 105.00),
-            (56.50, 112.00),
+            // 大陸内陸側境界（香港より西と大陸内部は SoutheastAsiaGeo の切り抜きと重ねて塗る。地図には描かない）
+            (22.50, 113.00),
+            (22.50, 109.00),
+            (56.50, 109.00),
             (55.50, 136.50),
         },
 
@@ -247,31 +246,6 @@ public static class JapanOutline
         new (double, double)[]
         {
             (24.49, 122.94), (24.48, 123.04), (24.43, 123.04), (24.43, 122.93),
-        },
-
-        // ======== フィリピン北部（ルソン島：アパリの北端〜ビガン・バギオ・マニラ〜レガスピ） ========
-        new (double, double)[]
-        {
-            (18.62, 120.82), // パグudpud・ルソン北西端
-            (18.38, 121.62), // アパリ（カガヤン川河口）
-            (18.48, 122.25), // サンタアナ（北東端）
-            (17.05, 122.52), // パラナン
-            (15.75, 121.65), // バレル
-            (14.75, 121.65), // インファンタ
-            (14.15, 122.95), // ダエト
-            (13.15, 123.85), // レガスピ（マヨン山）
-            (12.58, 124.12), // マトノグ（ルソン南東端）
-            (13.65, 122.45), // ボンドック半島
-            (13.72, 120.92), // バタンガス
-            (14.12, 120.58), // ナスグブ
-            (14.42, 120.82), // カヴィテ（マニラ湾南岸）
-            (14.55, 121.08), // マニラ・パサイ湾奥
-            (14.78, 120.52), // バターン半島
-            (15.32, 119.92), // サンバレス
-            (16.38, 119.88), // ボリナオ岬
-            (16.62, 120.32), // サンフェルナンド
-            (17.58, 120.34), // ビガン
-            (18.18, 120.52), // ラオアグ
         },
 
         // ======== 伊豆・小笠原諸島（八丈島・父島・硫黄島） ========
@@ -378,21 +352,33 @@ public static class JapanOutline
         }),
     };
 
-    /// <summary>地図表示用の粗い海岸線（大きな島＋樺太・韓国・台湾）。</summary>
+    /// <summary>地図表示用の粗い海岸線（大きな島＋樺太・韓国・台湾・東南アジア）。</summary>
     public static readonly (double Lat, double Lon)[][] Islands =
-        JapanGeo.Outline.Select(Decode).Concat(ExtraIslands).Concat(NorthAmericaGeo.Land.Select(Decode)).ToArray();
+        JapanGeo.Outline.Select(Decode).Concat(ExtraIslands).Concat(NorthAmericaGeo.Land.Select(Decode)).Concat(SoutheastAsiaGeo.Land.Select(Decode)).ToArray();
 
-    /// <summary>細かい海岸線（小さな島＋樺太・韓国・台湾）。</summary>
+    /// <summary>細かい海岸線（小さな島＋樺太・韓国・台湾・東南アジア）。</summary>
     public static readonly (double Lat, double Lon)[][] Detailed =
-        JapanGeo.Land.Select(Decode).Concat(ExtraIslands).Concat(NorthAmericaGeo.Land.Select(Decode)).ToArray();
+        JapanGeo.Land.Select(Decode).Concat(ExtraIslands).Concat(NorthAmericaGeo.Land.Select(Decode)).Concat(SoutheastAsiaGeo.Land.Select(Decode)).ToArray();
 
-    /// <summary>全湖沼（日本＋樺太・韓国・台湾）。</summary>
+    /// <summary>全湖沼（日本＋樺太・韓国・台湾・東南アジア）。</summary>
     public static readonly (string Name, (double Lat, double Lon)[] Points)[] AllLakes =
-        JapanGeo.Lakes.Select(l => (l.Name, Decode(l.Points))).Concat(ExtraLakes).Concat(NorthAmericaGeo.Lakes.Select(l => (l.Name, Decode(l.Points)))).ToArray();
+        JapanGeo.Lakes.Select(l => (l.Name, Decode(l.Points))).Concat(ExtraLakes).Concat(NorthAmericaGeo.Lakes.Select(l => (l.Name, Decode(l.Points)))).Concat(SoutheastAsiaGeo.Lakes.Select(l => (l.Name, Decode(l.Points)))).ToArray();
 
-    /// <summary>全河川（日本＋樺太・韓国・台湾）。</summary>
+    /// <summary>全河川（日本＋樺太・韓国・台湾・東南アジア）。</summary>
     public static readonly (string Name, int Rank, (double Lat, double Lon)[] Points)[] AllRivers =
         JapanGeo.Rivers.Select(r => (r.Name, r.Rank, Decode(r.Points))).Concat(ExtraRivers).ToArray();
+
+    /// <summary>陸を塗るためだけに置いた内陸の点（ここにつながる線は海岸ではない）。</summary>
+    private static readonly HashSet<(double Lat, double Lon)> InlandCorners = new()
+    {
+        (22.50, 113.00), (22.50, 109.00), (56.50, 109.00), (55.50, 136.50),
+    };
+
+    /// <summary>地図に描かない線（大陸の切り抜きの辺や内陸の境界）なら true。</summary>
+    public static bool HiddenEdge((double Lat, double Lon) a, (double Lat, double Lon) b) =>
+        InlandCorners.Contains(a) || InlandCorners.Contains(b)
+        || (a.Lat == b.Lat && Array.IndexOf(SoutheastAsiaGeo.CutLats, a.Lat) >= 0)
+        || (a.Lon == b.Lon && Array.IndexOf(SoutheastAsiaGeo.CutLons, a.Lon) >= 0);
 
     /// <summary>「緯度×10000, 経度×10000」を交互に並べた整数を、緯度・経度の組に戻す。</summary>
     public static (double Lat, double Lon)[] Decode(int[] a)

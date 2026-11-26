@@ -262,7 +262,9 @@ public sealed class MainForm : Form
             {
                 var pts = island.Select(p => ToScreen(Game.ToWorld(p.Lat, p.Lon))).ToArray();
                 g.FillPolygon(land, pts);
-                g.DrawPolygon(coast, pts);
+                for (int i = 0; i < pts.Length; i++)
+                    if (!JapanOutline.HiddenEdge(island[i], island[(i + 1) % island.Length]))
+                        g.DrawLine(coast, pts[i], pts[(i + 1) % pts.Length]);
             }
         }
 

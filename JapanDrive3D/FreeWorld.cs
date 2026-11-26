@@ -54,8 +54,8 @@ public sealed class Place
 /// </summary>
 public static class LandRaster
 {
-    public const double Lon0 = 110.0, Lat0 = 12.0, Res = 0.005;
-    public const int W = 40000, H = 14600;
+    public const double Lon0 = 92.0, Lat0 = -11.5, Res = 0.005;
+    public const int W = 43600, H = 19300;
     private static readonly List<(string Name, int Rank, (double Lat, double Lon)[] LatLon)> SmoothRivers = new();
     private static readonly ulong[] Bits = Build();
 

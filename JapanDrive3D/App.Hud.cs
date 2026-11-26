@@ -533,6 +533,21 @@ public sealed partial class App
     private static readonly PointF[][] DecodedDetailedIslands =
         JapanOutline.Detailed.Select(ring => ring.Select(p => Game.ToWorld(p.Lat, p.Lon)).ToArray()).ToArray();
 
+    /// <summary>海岸ではない線（大陸の切り抜きの辺など）。[島][i] は i 番目と次の点を結ぶ線。</summary>
+    /// <summary>「北緯 13.75° 東経 100.50°」の形。南半球は南緯、日付変更線より東は西経で表す。</summary>
+    private static string LatLonText(double lat, double lon)
+    {
+        string ns = lat < 0 ? $"南緯 {-lat:0.00}°" : $"北緯 {lat:0.00}°";
+        string ew = lon > 180 ? $"西経 {360 - lon:0.00}°" : $"東経 {lon:0.00}°";
+        return $"{ns} {ew}";
+    }
+
+    private static readonly bool[][] HiddenIslandEdges = HiddenEdges(JapanOutline.Islands);
+    private static readonly bool[][] HiddenDetailedEdges = HiddenEdges(JapanOutline.Detailed);
+
+    private static bool[][] HiddenEdges((double Lat, double Lon)[][] rings) =>
+        rings.Select(ring => ring.Select((p, i) => JapanOutline.HiddenEdge(p, ring[(i + 1) % ring.Length])).ToArray()).ToArray();
+
     private void CycleMiniMapZoom(int dir)
     {
         miniMapZoomIdx = Math.Clamp(miniMapZoomIdx + dir, 0, MiniMapZooms.Length - 1);
@@ -587,12 +602,15 @@ public sealed partial class App
 
         // 2) 海岸線（拡大時は小島やリアス式海岸まで精密な Detailed を使う）
         var coastlines = effZoom > 1.45f ? DecodedDetailedIslands : DecodedIslands;
+        var hiddenEdges = effZoom > 1.45f ? HiddenDetailedEdges : HiddenIslandEdges;
         Color coastCol = effZoom > 1.45f ? Rgb(232, 222, 188) : Rgb(225, 215, 180);
         float coastThick = (effZoom > 2.2f ? 2.4f : 1.9f) * u;
-        foreach (var island in coastlines)
+        for (int k = 0; k < coastlines.Length; k++)
         {
+            var island = coastlines[k];
             for (int i = 0; i < island.Length; i++)
             {
+                if (hiddenEdges[k][i]) continue;
                 var a = to(island[i]);
                 var b = to(island[(i + 1) % island.Length]);
                 if (!InView(a, 40) && !InView(b, 40)) continue;
@@ -743,7 +761,7 @@ public sealed partial class App
         }
 
         // 11) 主要都市マーカー＆最優先ラベル
-        static bool IsKeyOverseas(string name) => name is "豊原" or "オハ" or "カムチャツカ" or "ウラジオストク" or "ハバロフスク" or "ソウル" or "釜山" or "済州" or "平壌" or "瀋陽" or "大連" or "北京" or "青島" or "上海" or "福州" or "アモイ" or "香港" or "台北" or "高雄" or "マニラ" or "小笠原" or "ホノルル" or "サンフランシスコ" or "ニューヨーク" or "スワード" or "アンカレジ";
+        static bool IsKeyOverseas(string name) => name is "ハノイ" or "ホーチミン" or "バンコク" or "シンガポール" or "ジャカルタ" or "デンパサール" or "豊原" or "オハ" or "カムチャツカ" or "ウラジオストク" or "ハバロフスク" or "ソウル" or "釜山" or "済州" or "平壌" or "瀋陽" or "大連" or "北京" or "青島" or "上海" or "福州" or "アモイ" or "香港" or "台北" or "高雄" or "マニラ" or "小笠原" or "ホノルル" or "サンフランシスコ" or "ニューヨーク" or "スワード" or "アンカレジ";
         foreach (var c in MapData.Cities.OrderByDescending(c => c.IsGoal || c == game.StartCity || c == game.NavTarget ? 2 : IsKeyOverseas(c.Name) ? 1 : 0))
         {
             var p = to(Game.ToWorld(c));
@@ -1032,7 +1050,7 @@ public sealed partial class App
         double lat = 37.0 - mp.Y;
         double lon = 137.0 + mp.X / Math.Cos(36 * Math.PI / 180);
 
-        string titleLine = $"北緯 {lat:0.00}° 東経 {lon:0.00}°";
+        string titleLine = LatLonText(lat, lon);
         string subLine1 = "左クリック：この場所へワープ / 右クリック：目的地に設定";
         string subLine2 = "";
         Color titleCol = Rgb(180, 220, 255);
@@ -1081,7 +1099,7 @@ public sealed partial class App
                 titleLine = $"{(got ? "●" : "★")} 名所：{spot.Name}（{spot.City.Name}）";
                 titleCol = got ? Rgb(180, 235, 180) : Rgb(255, 200, 120);
                 subLine1 = got ? "スタンプ獲得済み！" : "未獲得の名所スタンプ（近づくとスタンプGET）";
-                subLine2 = $"北緯 {lat:0.00}° 東経 {lon:0.00}°";
+                subLine2 = LatLonText(lat, lon);
             }
         }
 
@@ -1094,7 +1112,7 @@ public sealed partial class App
                 bestD = d;
                 titleLine = $"▲ {pName}（標高 {elev:N0} m）";
                 titleCol = Rgb(245, 235, 200);
-                subLine1 = $"ゲーム内山頂高さ：{elev * FreeWorld.VScale:0} m　北緯 {pLat:0.00}° 東経 {pLon:0.00}°";
+                subLine1 = $"ゲーム内山頂高さ：{elev * FreeWorld.VScale:0} m　{LatLonText(pLat, pLon)}";
                 subLine2 = "車や戦車で登山したり、航空機で山頂上空を遊覧できます";
             }
         }
