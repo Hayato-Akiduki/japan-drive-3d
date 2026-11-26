@@ -24,26 +24,6 @@ public sealed partial class App
         StartGame(GameMode.Tour);
     }
 
-    private static Rectangle ResumeTourRect(int sw, int sh, float u)
-    {
-        float width = Math.Min(sw - 24 * u, 640 * u);
-        return new Rectangle((sw - width) / 2f, sh * 0.46f - 58 * u, width, 46 * u);
-    }
-
-    private void DrawTourResume(int sw, int sh, float u, Vector2 mouse)
-    {
-        if (tourResumeUnavailable)
-        {
-            TextCentered("保存した日本一周を読み込めませんでした", sw / 2f, sh * 0.46f - 44 * u, 17, Rgb(255, 185, 120));
-            return;
-        }
-        if (!CanResumeTour || save.Tour is not { } progress) return;
-        var r = ResumeTourRect(sw, sh, u);
-        bool hover = !settingsOpen && Raylib.CheckCollisionPointRec(mouse, r);
-        Panel(r.X, r.Y, r.Width, r.Height, hover ? Rgb(35, 113, 101) : Rgb(26, 77, 76));
-        TextCentered($"3　日本一周を続ける　（{progress.City}）", sw / 2f, r.Y + 11 * u, 20, Color.White);
-    }
-
     private void UpdateDrivingHints()
     {
         if (shotFile != null || onMoon && freeRoam || detour != null || game.Cleared) return;

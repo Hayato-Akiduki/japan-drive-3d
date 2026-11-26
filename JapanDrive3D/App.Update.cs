@@ -76,11 +76,11 @@ public sealed partial class App
 
         float w = Math.Max(Measure(msg, 18).X, sub != null ? Measure(sub, 13).X : 0) + 48 * u;
         float h = (sub != null || progress >= 0 ? 66 : 42) * u;
-        float x = (sw - w) / 2, y = sh * 0.06f;
+        float x = sw - w - 24 * u, y = 20 * u;
         Panel(x, y, w, h, new Color(20, 30, 50, 230));
         Raylib.DrawRectangleRoundedLinesEx(new Rectangle(x, y, w, h), 0.2f, 6, 2 * u, col);
-        TextCentered(msg, sw / 2f, y + 10 * u, 18, col);
-        if (sub != null) TextCentered(sub, sw / 2f, y + 40 * u, 13, Rgb(220, 225, 235));
+        TextCentered(msg, x + w / 2, y + 10 * u, 18, col);
+        if (sub != null) TextCentered(sub, x + w / 2, y + 40 * u, 13, Rgb(220, 225, 235));
         if (progress >= 0)
         {
             var bar = new Rectangle(x + 24 * u, y + 44 * u, w - 48 * u, 10 * u);

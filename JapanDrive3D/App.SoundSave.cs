@@ -177,13 +177,4 @@ public sealed partial class App
             case FxKind.Dust: Audio.PlayAt(Audio.Thud, distance, Math.Min(1, size / 1.5f)); break;
         }
     }
-
-    /// <summary>タイトル画面に出す記録。</summary>
-    private string RecordText()
-    {
-        string tour = save.TourClears > 0
-            ? $"日本一周クリア {save.TourClears}回（最速 {Game.FormatDuration(save.BestTourMinutes)}）"
-            : "日本一周 未クリア";
-        return $"名所スタンプ {stamps.Count}/{Spots.All.Count}　{tour}　撃破 {destroyed}";
-    }
 }

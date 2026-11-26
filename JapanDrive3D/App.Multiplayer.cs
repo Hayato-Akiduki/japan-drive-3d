@@ -29,8 +29,6 @@ public sealed partial class App
 
     private sealed record RemoteVehicle(PlayerPose From, PlayerPose Target, float ReceivedAt);
 
-    private static Rectangle RoomMenuButton(float u) => new(18 * u, 18 * u, 180 * u, 42 * u);
-
     private static Rectangle RoomPanel(int sw, int sh, float u)
     {
         float width = Math.Min(sw - 32 * u, 670 * u);
@@ -306,14 +304,6 @@ public sealed partial class App
             }
             else scene.DrawVehicleAt(pos, -pose.Heading, color, kind, (time * pose.Speed) % 360, shadow: false);
         }
-    }
-
-    private void DrawRoomButton(float u, Vector2 mouse)
-    {
-        var button = RoomMenuButton(u);
-        bool hover = !settingsOpen && Raylib.CheckCollisionPointRec(mouse, button);
-        Panel(button.X, button.Y, button.Width, button.Height, hover ? Rgb(36, 113, 118) : Rgb(25, 71, 85));
-        TextCentered("4　マルチプレイ", button.X + button.Width / 2, button.Y + 11 * u, 18, Color.White);
     }
 
     private void DrawRoomMenu(int sw, int sh, float u)

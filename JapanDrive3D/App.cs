@@ -453,47 +453,6 @@ public sealed partial class App
         (Raylib.IsKeyDown(KeyboardKey.Left) || Raylib.IsKeyDown(KeyboardKey.A) ? -1 : 0)
         + (Raylib.IsKeyDown(KeyboardKey.Right) || Raylib.IsKeyDown(KeyboardKey.D) ? 1 : 0);
 
-    private void UpdateTitle(float dt)
-    {
-        titleTime += dt;
-        newTourConfirm = Math.Max(0, newTourConfirm - dt);
-        playerS += 22 * dt;
-        scene.PlayerS = playerS;
-        traffic.Update(dt, playerS, playerU, 22);
-        HandleUpdateKeys();
-        if (Raylib.IsKeyPressed(KeyboardKey.One) || Raylib.IsKeyPressed(KeyboardKey.Kp1)) RequestNewTour();
-        else if (Raylib.IsKeyPressed(KeyboardKey.Two) || Raylib.IsKeyPressed(KeyboardKey.Kp2)) StartGame(GameMode.Free);
-        else if (CanResumeTour && (Raylib.IsKeyPressed(KeyboardKey.Three) || Raylib.IsKeyPressed(KeyboardKey.Kp3)))
-            StartGame(GameMode.Tour, resumeTour: true);
-        else if (Raylib.IsKeyPressed(KeyboardKey.Four) || Raylib.IsKeyPressed(KeyboardKey.Kp4)) OpenRoomMenu();
-        else if (Raylib.IsKeyPressed(KeyboardKey.S)) OpenSettings();
-        else if (Raylib.IsMouseButtonPressed(MouseButton.Left))
-        {
-            int sw = Raylib.GetScreenWidth(), sh = Raylib.GetScreenHeight();
-            float u = Draw.Ui;
-            var mouse = Raylib.GetMousePosition();
-            if (Raylib.CheckCollisionPointRec(mouse, SettingsButtonRect(sw, u))) OpenSettings();
-            else if (Raylib.CheckCollisionPointRec(mouse, RoomMenuButton(u))) OpenRoomMenu();
-            else if (CanResumeTour && Raylib.CheckCollisionPointRec(mouse, ResumeTourRect(sw, sh, u)))
-                StartGame(GameMode.Tour, resumeTour: true);
-            else if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(0, sw, sh, u))) RequestNewTour();
-            else if (Raylib.CheckCollisionPointRec(mouse, TitleCardRect(1, sw, sh, u))) StartGame(GameMode.Free);
-            else
-            {
-                float togglesY = TitleTogglesY(sh, u);
-                for (int ti = 0; ti < 3; ti++)
-                {
-                    if (!Raylib.CheckCollisionPointRec(mouse, TitleToggleRect(ti, sw, togglesY, u))) continue;
-                    if (ti == 0) ToggleBgm();
-                    else if (ti == 1) ToggleSfx();
-                    else ToggleFreeSpeedLimit();
-                    break;
-                }
-            }
-        }
-        UpdateCamera(dt);
-    }
-
     // ---------------- 寄り道（一般道） ----------------
 
     private void StartDetour(Spot spot)
@@ -633,9 +592,7 @@ public sealed partial class App
         Vector3 pos, target;
         if (title)
         {
-            float a = titleTime * 0.18f;
-            pos = car + new Vector3(MathF.Sin(a) * 11, 3.2f, MathF.Cos(a) * 11);
-            target = car + new Vector3(0, 0.8f, 0);
+            (pos, target) = TitleCamera(car, titleTime);
             camera.FovY = 50;
         }
         else if (showcase)
@@ -886,7 +843,7 @@ public sealed partial class App
 
     private void RenderGameplay()
     {
-        scene.SetTime(title ? 9 * 60 : game.GameMinutes);
+        scene.SetTime(title ? TitleMinutes : game.GameMinutes);
         int w = Raylib.GetScreenWidth(), h = Raylib.GetScreenHeight();
         if (freeRoam && !title && onMoon)
         {
