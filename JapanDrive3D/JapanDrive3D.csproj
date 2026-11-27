@@ -18,6 +18,11 @@
     <PackageReference Include="Raylib-cs" Version="7.0.2" />
   </ItemGroup>
 
+  <!-- 地図データの自動チェック（JapanDrive.Tests）から海岸線データを読めるようにする -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="JapanDrive.Tests" />
+  </ItemGroup>
+
   <!-- 遊び方メモを配布フォルダにも入れる -->
   <ItemGroup>
     <None Include="遊び方.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
