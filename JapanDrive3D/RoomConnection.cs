@@ -18,7 +18,7 @@ internal sealed class RoomConnection(Uri address, RoomTicket ticket) : IRoomConn
     private static readonly HttpClient Http = new(new SocketsHttpHandler { AllowAutoRedirect = false })
     {
         Timeout = TimeSpan.FromSeconds(4),
-        MaxResponseContentBufferSize = 8192,
+        MaxResponseContentBufferSize = 16384,
     };
 
     public RoomTicket Ticket { get; } = ticket;

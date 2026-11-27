@@ -1,4 +1,5 @@
 using System.Numerics;
+using JapanDrive.Multiplayer;
 using Raylib_cs;
 using static JapanDrive.Draw;
 using PointF = System.Drawing.PointF;
@@ -361,6 +362,11 @@ public sealed partial class App
         if (onMoon && moon != null)
         {
             UpdateMoon(dt);
+            return;
+        }
+        if (roomRound?.Phase == RoundPhase.Countdown)
+        {
+            UpdateCamera(dt);
             return;
         }
         var f = free!;
@@ -802,7 +808,7 @@ public sealed partial class App
 
     private void HandleFreeKeys()
     {
-        if (!CompetitiveRoom && onMoon && Raylib.IsKeyPressed(KeyboardKey.R))
+        if (!CompetitiveRoom && onMoon && !courseEditing && Raylib.IsKeyPressed(KeyboardKey.R))
         {
             RequestMoonReturn();
             return;
@@ -811,12 +817,17 @@ public sealed partial class App
         if (!CompetitiveRoom && Raylib.IsKeyPressed(KeyboardKey.V)) SwitchVehicle();
         if (Raylib.IsKeyPressed(KeyboardKey.C)) cockpit = !cockpit;
         if (Raylib.IsKeyPressed(KeyboardKey.B)) stampBook = true;
-        if (Raylib.IsKeyPressed(KeyboardKey.M)) bigMap = !bigMap;
+        if (Raylib.IsKeyPressed(KeyboardKey.M))
+        {
+            bigMap = !bigMap;
+            if (!bigMap) courseEditing = false;
+        }
         if (Raylib.IsKeyPressed(KeyboardKey.LeftBracket) || Raylib.IsKeyPressed(KeyboardKey.Comma)) CycleMiniMapZoom(-1);
         if (Raylib.IsKeyPressed(KeyboardKey.RightBracket) || Raylib.IsKeyPressed(KeyboardKey.Period)) CycleMiniMapZoom(1);
         if (Raylib.IsKeyPressed(KeyboardKey.Escape))
         {
-            if (bigMap) bigMap = false;
+            if (bigMap && courseEditing) courseEditing = false;
+            else if (bigMap) bigMap = false;
             else if (waypoint != null) { waypoint = null; game.AddLog("目的地を解除しました。"); }
         }
         if (Raylib.IsKeyPressed(KeyboardKey.N))
@@ -1168,6 +1179,7 @@ public sealed partial class App
         }
         var f = free!;
         f.Draw(camera.Position, time);
+        DrawEarthMatchBeacon(f);
         if (IsFlyer(playerKind))
         {
             DrawPlayerAircraft(f);
@@ -1431,7 +1443,12 @@ public sealed partial class App
         var f = free!;
         string name;
         double tx, tz;
-        if (waypoint is (double wx, double wz))
+        if (ActiveRaceTarget() is { } raceTarget)
+        {
+            name = $"チェックポイント {raceTarget.Index}/{raceTarget.Total}";
+            (tx, tz) = (raceTarget.X, raceTarget.Z);
+        }
+        else if (waypoint is (double wx, double wz))
         {
             name = "目的地";
             (tx, tz) = (wx, wz);
@@ -1448,7 +1465,8 @@ public sealed partial class App
         double dx = tx - f.PX, dz = tz - f.PZ;
         double dist = Math.Sqrt(dx * dx + dz * dz);
         double bearing = Math.Atan2(dx, dz) * 180 / Math.PI;
-        string text = $"{name}　{Compass(bearing)}へ {dist / 1000:0.0} km";
+        string distText = dist < 1000 ? $"{dist:0} m" : $"{dist / 1000:0.0} km";
+        string text = $"{name}　{Compass(bearing)}へ {distText}";
         var m = Measure(text, 17);
         float w = m.X + 80 * u, x = (sw - w) / 2, y = 16 * u;
         Panel(x, y, w, 46 * u, new Color(60, 25, 20, 210));
@@ -1465,8 +1483,19 @@ public sealed partial class App
     private void HandleFreeMapMouse()
     {
         if (UpdateBigMapCamera(out bool clickedLeft, out bool clickedRight)) return;
-        if (!clickedLeft && !clickedRight) return;
+        int sw = Raylib.GetScreenWidth(), sh = Raylib.GetScreenHeight();
         var (center, origin, scale) = BigMapView();
+        if (HandleCourseEditorInput(sw, sh, Ui, moonMap: false, clickedLeft, clickedRight, mouse =>
+        {
+            var mp0 = new PointF(center.X + (mouse.X - origin.X) / scale, center.Y + (mouse.Y - origin.Y) / scale);
+            return FreeWorld.FromMap(mp0);
+        })) return;
+        if (courseEditing || (!clickedLeft && !clickedRight)) return;
+        if (clickedLeft && CompetitiveRoom)
+        {
+            game.AddLog("対戦・レース中は地図からのワープはできません。");
+            return;
+        }
         var mouse = Raylib.GetMousePosition();
         var mp = new PointF(center.X + (mouse.X - origin.X) / scale, center.Y + (mouse.Y - origin.Y) / scale);
         var (wx, wz) = FreeWorld.FromMap(mp);

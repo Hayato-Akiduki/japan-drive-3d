@@ -439,7 +439,7 @@ public sealed partial class App
         var m = moon!;
         scene.FogScale = 100f; // 月は大気がないため霧フェードを無効化
         m.Draw(camera.Position, time);
-        DrawMatchBeacon(m);
+        DrawMoonMatchBeacon(m);
 
         if (IsFlyer(playerKind))
         {
@@ -572,15 +572,36 @@ public sealed partial class App
         Text("M：月面地図", x + 8 * u, y + size - 18 * u, 11, Sub);
     }
 
+    private void HandleMoonMapMouse()
+    {
+        int sw = Raylib.GetScreenWidth(), sh = Raylib.GetScreenHeight();
+        float u = Ui;
+        var center = new Vector2(sw / 2f, sh * 0.49f);
+        float radius = Math.Min(sw * 0.34f, sh * 0.30f);
+        HandleCourseEditorInput(sw, sh, u, moonMap: true,
+            Raylib.IsMouseButtonReleased(MouseButton.Left),
+            Raylib.IsMouseButtonReleased(MouseButton.Right),
+            mouse =>
+            {
+                var d = mouse - center;
+                if (d.Length() > radius) return null;
+                double x = d.X / radius * MoonWorld.AreaRadius;
+                double z = -d.Y / radius * MoonWorld.AreaRadius;
+                return (x, z);
+            });
+    }
+
     private void DrawMoonMap(int sw, int sh, float u, bool confirming)
     {
         Raylib.DrawRectangle(0, 0, sw, sh, Rgb(11, 19, 32));
-        TextCentered("静かの海　月面地図", sw / 2f, 38 * u, 34, Color.White);
-        TextCentered("橙の円：探索エリアの境界　水色の矢印：現在地", sw / 2f, 90 * u, 16, Sub);
-        DrawMoonMapPlot(new Vector2(sw / 2f, sh * 0.51f), Math.Min(sw * 0.35f, sh * 0.32f), u, labels: true);
+        TextCentered("静かの海　月面地図", sw / 2f, 34 * u, 34, Color.White);
+        TextCentered("橙の円：探索エリアの境界　水色の矢印：現在地", sw / 2f, 82 * u, 16, Sub);
+        DrawMoonMapPlot(new Vector2(sw / 2f, sh * 0.49f), Math.Min(sw * 0.34f, sh * 0.30f), u, labels: true);
+        float helpY = CanEditRoom ? sh - 132 * u : sh - 78 * u;
         TextCentered(CompetitiveRoom ? "M・Esc：閉じる　オレンジの点：試合の目印"
             : confirming ? "もう一度 R を押すと地球へ帰還します" : "M・Esc：閉じる　R を2回：地球へ帰還",
-            sw / 2f, sh - 78 * u, 18, confirming ? Orange : Color.White);
+            sw / 2f, helpY, 17, confirming ? Orange : Color.White);
+        DrawCourseEditorBar(sw, sh, u, moonMap: true);
     }
 
     private void DrawMoonMapPlot(Vector2 center, float radius, float u, bool labels)
@@ -598,6 +619,7 @@ public sealed partial class App
             if (labels) Text(site.Name, point.X + 10 * u, point.Y - 10 * u, 16, Color.White);
         }
 
+        DrawCourseOnMap(MapPoint, moonMap: true, u, labels);
         var player = MapPoint(m.PX, m.PZ);
         if (MatchTarget() is { } target)
             Raylib.DrawCircleV(MapPoint(target.X, target.Z), 6 * u, Orange);

@@ -860,7 +860,11 @@ public sealed partial class App
 
         // 13) 自車マーカー
         var carP = to(CarMapPos);
-        if (freeRoam) DrawRoomMapPlayers(pose => to(FreeWorld.ToMap(pose.X, pose.Z)), u);
+        if (freeRoam)
+        {
+            DrawCourseOnMap((x, z) => to(FreeWorld.ToMap(x, z)), moonMap: false, u, labels);
+            DrawRoomMapPlayers(pose => to(FreeWorld.ToMap(pose.X, pose.Z)), u);
+        }
         float rot = CarMapRot;
         Raylib.DrawPoly(carP, 3, 9.5f * u, rot, Rgb(255, 50, 50));
         Raylib.DrawPolyLinesEx(carP, 3, 9.5f * u, rot, 2 * u, Color.White);
@@ -1003,9 +1007,14 @@ public sealed partial class App
         // 上部バー：操作ガイド
         Panel(16 * u, 10 * u, sw - 32 * u, 38 * u, new Color(10, 22, 38, 220));
         string topHelp = freeRoam
-            ? $"ホイール・+/-：拡大縮小（×{bigMapZoom:0.0}）　ドラッグ・矢印：移動　Space：現在地　R：全体　左クリック：ワープ　右クリック：目的地　M・Esc：閉じる"
+            ? courseEditing
+                ? $"コース作成中　ホイール・+/-：拡大縮小（×{bigMapZoom:0.0}）　ドラッグ：移動　左クリック：地点追加　右クリック：1つ戻す　Enter：確定　Esc：終了"
+                : CompetitiveRoom
+                    ? $"ホイール・+/-：拡大縮小（×{bigMapZoom:0.0}）　ドラッグ・矢印：移動　Space：現在地　R：全体　M・Esc：閉じる"
+                    : $"ホイール・+/-：拡大縮小（×{bigMapZoom:0.0}）　ドラッグ・矢印：移動　Space：現在地　R：全体　左クリック：ワープ　右クリック：目的地　M・Esc：閉じる"
             : $"ホイール・+/-：拡大縮小（×{bigMapZoom:0.0}）　ドラッグ・矢印：移動　Space：現在地　R：全体　左クリック：出発/ナビ　右クリック：ナビ　M・Esc：閉じる";
         TextCentered(topHelp, sw / 2f, 19 * u, 14, Color.White);
+        if (freeRoam) DrawCourseEditorBar(sw, sh, u, moonMap: false);
 
         // 左下：縮尺スケールバー＆凡例パネル
         DrawMapLegendAndScale(18 * u, sh - 148 * u, scale, u);

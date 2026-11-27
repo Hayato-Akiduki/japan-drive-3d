@@ -3,7 +3,7 @@ using System.Threading.RateLimiting;
 using JapanDrive.Multiplayer;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 2048);
+builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 4096);
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;

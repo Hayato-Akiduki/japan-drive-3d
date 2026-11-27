@@ -331,6 +331,7 @@ public sealed partial class App
                 if (freeRoam)
                 {
                     if (!onMoon) HandleFreeMapMouse();
+                    else HandleMoonMapMouse();
                 }
                 else if (detour == null) HandleBigMapMouse();
                 else UpdateBigMapCamera(out _, out _);

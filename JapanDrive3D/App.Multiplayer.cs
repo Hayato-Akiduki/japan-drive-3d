@@ -12,9 +12,17 @@ public sealed partial class App
     private bool roomMenu;
     private bool roomEditCode;
     private RoomMode selectedRoomMode;
+    private RoomMode roomMode;
+    private RaceCourse? roomCourse;
+    private int roomRevision;
+    private RoomConfig? pendingRoomConfig;
+    private bool roomConfigInFlight;
     private RoundSnapshot? roomRound;
     private bool startRoomRound;
-    private bool CompetitiveRoom => room != null && room.Ticket.Mode != RoomMode.Free;
+    private bool CompetitiveRoom => room != null && roomMode != RoomMode.Free;
+    private bool IsRoomHost => room is { Ticket.Seat: 1 };
+    private bool RoomLocked => roomRound?.Phase is RoundPhase.Countdown or RoundPhase.Playing;
+    private bool CanEditRoom => IsRoomHost && !RoomLocked;
     private string relayUrl = Environment.GetEnvironmentVariable("JAPANDRIVE_RELAY_URL") ?? "";
     private string joinCode = "";
     private string roomMessage = "";
@@ -149,16 +157,17 @@ public sealed partial class App
                 room = opening.GetAwaiter().GetResult();
                 roomMenu = false;
                 roomMessage = "";
+                roomMode = room.Ticket.Mode;
+                roomCourse = null;
+                roomRevision = 0;
+                pendingRoomConfig = null;
+                roomConfigInFlight = false;
+                courseEditing = false;
+                courseDraft.Clear();
                 nextRoomUpdate = 0;
                 copiedUntil = 0;
                 StartGame(GameMode.Free);
-                if (CompetitiveRoom)
-                {
-                    playerKind = VehicleKind.Sports;
-                    ApplyVehicle();
-                    EnterMoon(landed: true);
-                    SpawnMatchVehicle(room.Ticket.Seat);
-                }
+                if (CompetitiveRoom) PrepareMatchArena();
             }
             catch (Exception exception) when (IsRoomError(exception))
             {
@@ -185,23 +194,43 @@ public sealed partial class App
             Raylib.SetClipboardText(invite);
             copiedUntil = time + 2.5f;
         }
-        if (CompetitiveRoom && room.Ticket.Seat == 1 && Raylib.IsKeyPressed(KeyboardKey.F8) &&
-            roomRound?.Phase is RoundPhase.Waiting or RoundPhase.Finished &&
-            RoomMatch.CanStart(roomPlayers))
+        if (CanEditRoom && !settingsOpen && !stampBook && !courseEditing && Raylib.IsKeyPressed(KeyboardKey.F9))
+            CycleRoomMode();
+        if (CanEditRoom && !settingsOpen && !stampBook && !bigMap && Raylib.IsKeyPressed(KeyboardKey.F10))
+        {
+            bool shift = Raylib.IsKeyDown(KeyboardKey.LeftShift) || Raylib.IsKeyDown(KeyboardKey.RightShift);
+            if (shift) CommitCourseDraft();
+            else AddCurrentPositionToCourse();
+        }
+        if (CompetitiveRoom && IsRoomHost && Raylib.IsKeyPressed(KeyboardKey.F8) &&
+            !RoomLocked && RoomMatch.CanStart(roomPlayers, roomMode, roomCourse))
             startRoomRound = true;
         if (exchangingRoom is { IsCompleted: true } exchange)
         {
             exchangingRoom = null;
+            bool wasConfigInFlight = roomConfigInFlight;
+            roomConfigInFlight = false;
             try
             {
                 var snapshot = exchange.GetAwaiter().GetResult();
                 roomPlayers = snapshot.Players;
+                if (pendingRoomConfig == null && (snapshot.Revision > roomRevision ||
+                    (wasConfigInFlight && snapshot.Revision >= roomRevision) ||
+                    (snapshot.Revision == roomRevision && (snapshot.Mode != roomMode || !SameCourse(snapshot.Course, roomCourse)))))
+                {
+                    ApplyRoomState(snapshot.Mode, snapshot.Course, snapshot.Revision, announce: !wasConfigInFlight);
+                }
                 if (CompetitiveRoom && snapshot.Match is { } match)
                 {
                     if (roomRound?.Number != match.Number && match.Phase is RoundPhase.Countdown or RoundPhase.Playing)
-                        SpawnMatchVehicle(room.Ticket.Seat);
+                    {
+                        courseEditing = false;
+                        bigMap = false;
+                        PrepareMatchArena();
+                    }
                     roomRound = match;
                 }
+                else if (!CompetitiveRoom) roomRound = null;
                 UpdateRemoteVehicles(room.Ticket.Seat);
                 roomFailures = 0;
             }
@@ -217,11 +246,14 @@ public sealed partial class App
                 }
             }
         }
-        if (exchangingRoom == null && time >= nextRoomUpdate)
+        if (exchangingRoom == null && (time >= nextRoomUpdate || pendingRoomConfig != null))
         {
             nextRoomUpdate = time + 0.1f;
+            var config = pendingRoomConfig;
+            pendingRoomConfig = null;
+            roomConfigInFlight = config != null;
             var pose = new PlayerPose(onMoon, playerKind.ToString(), moon?.PX ?? free.PX, moon?.PZ ?? free.PZ,
-                freeY, heading, pitch, bank, freeKmh, roomRound?.Number ?? 0, startRoomRound);
+                freeY, heading, pitch, bank, freeKmh, roomRound?.Number ?? 0, startRoomRound, config);
             startRoomRound = false;
             exchangingRoom = room.ExchangeAsync(pose);
         }
@@ -270,6 +302,13 @@ public sealed partial class App
         room = null;
         exchangingRoom = null;
         roomFailures = 0;
+        roomMode = RoomMode.Free;
+        roomCourse = null;
+        roomRevision = 0;
+        pendingRoomConfig = null;
+        roomConfigInFlight = false;
+        courseEditing = false;
+        courseDraft.Clear();
         roomPlayers = [];
         roomRound = null;
         startRoomRound = false;
@@ -340,9 +379,11 @@ public sealed partial class App
         if (room == null) return;
         int count = Math.Max(1, roomPlayers.Length);
         int otherWorld = roomPlayers.Count(player => player?.Pose is { } pose && pose.Moon != onMoon);
+        string hostHint = CanEditRoom ? "　F9：モード切替　M：コース作成" : "";
         string status = roomFailures > 0 ? "ルームに再接続中…"
-            : $"ルーム {room.Ticket.Code}　{count}/{RoomProtocol.Capacity}人　" +
-                (time < copiedUntil ? "コピーしました" : room.Invite != null ? "F6：コード　F7：招待リンク" : "F6：コードをコピー");
+            : $"ルーム {room.Ticket.Code}　{count}/{RoomProtocol.Capacity}人　[{RoomModeLabel(roomMode, roomCourse)}]　" +
+                (time < copiedUntil ? "コピーしました" : room.Invite != null ? "F6：コード　F7：招待リンク" : "F6：コードをコピー") +
+                hostHint;
         if (otherWorld > 0) status += $"　{(onMoon ? "地球" : "月")}に {otherWorld}人";
         float width = Measure(status, 15).X + 24 * u;
         Panel((sw - width) / 2, sh - 105 * u, width, 30 * u, Rgb(20, 57, 71));

@@ -12,7 +12,7 @@ namespace JapanDrive;
 internal static class DirectRoom
 {
     public const int Port = 5081;
-    private const int MaxFrame = 8192;
+    private const int MaxFrame = 16384;
     private const string Scheme = "japandrive";
     private static readonly byte[] DiscoveryReply = "JDR1"u8.ToArray();
 
@@ -316,7 +316,7 @@ internal static class DirectRoom
                     if (match.Locked) return new Response(423);
                     if (members.Count >= RoomProtocol.Capacity) return new Response(409);
                     int seat = Enumerable.Range(2, RoomProtocol.Capacity - 1).First(n => members.All(m => m.Ticket.Seat != n));
-                    var guest = new RoomTicket(Ticket.Code, Guid.NewGuid(), seat, Ticket.Mode);
+                    var guest = new RoomTicket(Ticket.Code, Guid.NewGuid(), seat, match.Mode);
                     members.Add(new Member(guest));
                     return new Response(200, Ticket: guest);
                 }
